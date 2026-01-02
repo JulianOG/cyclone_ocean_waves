@@ -22,6 +22,7 @@ suppressPackageStartupMessages({
 
 ```{r helpers, include=FALSE}
 is_abs_path <- function(p) {
+  p <- as.character(p)
   if (is.na(p) || !nzchar(p)) return(FALSE)
   # POSIX absolute or Windows drive absolute
   grepl("^(/|[A-Za-z]:[\\/])", p)
@@ -32,22 +33,20 @@ find_git_root <- function(start = getwd(), max_up = 10) {
   for (i in 0:max_up) {
     cand <- p
     if (dir.exists(file.path(cand, ".git"))) return(cand)
-    # If we're in a subdir of the repo, walk up
     up <- normalizePath(file.path(cand, ".."), winslash = "/", mustWork = FALSE)
     if (identical(up, cand)) break
     p <- up
   }
-  # Fallback: GitHub Actions provides this
   ws <- Sys.getenv("GITHUB_WORKSPACE", unset = "")
   if (nzchar(ws) && dir.exists(ws)) return(normalizePath(ws, winslash = "/", mustWork = FALSE))
-  # Last resort
   normalizePath(getwd(), winslash = "/", mustWork = FALSE)
 }
 
 git_root <- find_git_root()
 
 resolve_from_root <- function(p) {
-  if (is.na(p) || !nzchar(p)) return(p)
+  p <- as.character(p)
+  if (is.na(p) || !nzchar(p)) return(NA_character_)
   if (is_abs_path(p)) return(p)
   file.path(git_root, p)
 }
@@ -75,7 +74,10 @@ if (nrow(idx) == 0) {
 
 # Resolve paths in the index to absolute paths (robust to Rmd working directory)
 path_cols <- intersect(c("gpkg","haz_nc","haz_hs0_tif","haz_pr_tif","hs0_jpg","pr_jpg"), names(idx))
-for (cc in path_cols) idx[[cc]] <- vapply(idx[[cc]], resolve_from_root, character(1))
+for (cc in path_cols) {
+  idx[[cc]] <- as.character(idx[[cc]]) # <- crucial when a column is all NA (read.csv may infer logical)
+  idx[[cc]] <- vapply(idx[[cc]], resolve_from_root, character(1))
+}
 
 idx
 ```
@@ -111,7 +113,7 @@ for (k in seq_len(nrow(idx))) {
   row <- idx[k, ]
   cat("\n\n### ", row$name, " (", row$TCid, ")\n\n", sep = "")
 
-  if (!file.exists(row$gpkg)) {
+  if (is.na(row$gpkg) || !file.exists(row$gpkg)) {
     cat("*Track file missing:* ", row$gpkg, "\n\n", sep = "")
     next
   }
@@ -205,5 +207,5 @@ for (k in seq_len(nrow(idx))) {
 
 ### Notes
 
-- This report resolves file paths relative to the **git repository root**, so it works even when R Markdown changes the knitting working directory.
-- Hazards are loaded from **NetCDF** (`haz_###.nc`) when present.
+- This report fixes an R `read.csv()` quirk: if a column is **all NA**, it can be inferred as **logical**, which broke `vapply()`. We coerce path columns to character before resolving.
+- Paths are resolved relative to the **git repo root**, so the report works reliably on GitHub Actions.

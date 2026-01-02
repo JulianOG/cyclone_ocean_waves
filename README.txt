@@ -1,11 +1,8 @@
-Fix for your current render failure
+Fix for: values must be type 'character' but FUN result is type 'logical'
 
-The error "cannot open the connection" happens because R Markdown may knit from the /reports
-directory, making relative paths like outputs/latest/index.csv point to reports/outputs/...
+Cause:
+- read.csv() can infer columns that are entirely NA as logical.
+- vapply(..., FUN, character(1)) then fails if FUN returns logical NA.
 
-This update resolves all output paths relative to the git repo root, so it works reliably on GitHub Actions.
-
-Files included:
-- scripts/wmo_tracks_daily.R (unchanged from v2)
-- reports/haz_leaflet.Rmd (UPDATED: robust path resolution)
-- .github/workflows/wmo_tracks_daily.yml (minor cache bump)
+Fix:
+- In reports/haz_leaflet.Rmd, path columns are coerced with as.character() before vapply().
