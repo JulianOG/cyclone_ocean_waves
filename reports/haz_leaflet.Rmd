@@ -16,8 +16,7 @@ knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
 suppressPackageStartupMessages({
   library(terra)
   library(leaflet)
-  library(leafem)
-})
+  })
 ```
 
 ```{r helpers, include=FALSE}
@@ -207,19 +206,19 @@ for (k in seq_len(nrow(idx))) {
         weight = 3, opacity = 0.8, dashArray = "6,6",
         group = "Track (forecast)"
       ) |>
-      leafem::addRasterImage(
+      leaflet::addRasterImage(
         hs0_peak_ll, opacity = 0.65,
         colors = pal_hs0p, group = paste0("Hs0 @ peak (", hs0_names[hs0_peak_i], ")")
       ) |>
-      leafem::addRasterImage(
+      leaflet::addRasterImage(
         hs0_max_ll, opacity = 0.65,
         colors = pal_hs0m, group = "Hs0 max (over time)"
       ) |>
-      leafem::addRasterImage(
+      leaflet::addRasterImage(
         pr_min_ll, opacity = 0.65,
         colors = pal_prp, group = paste0("Pressure @ min (", pr_names[pr_min_i], ")")
       ) |>
-      leafem::addRasterImage(
+      leaflet::addRasterImage(
         pr_min_s_ll, opacity = 0.65,
         colors = pal_prm, group = "Pressure min (over time)"
       ) |>

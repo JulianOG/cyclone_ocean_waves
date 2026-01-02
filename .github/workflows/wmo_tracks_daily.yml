@@ -2,7 +2,7 @@ name: WMO tracks + hazards (daily)
 
 on:
   schedule:
-    - cron: "15 0 * * *"
+    - cron: "15 0 * * *"   # 00:15 UTC daily
   workflow_dispatch:
 
 concurrency:
@@ -23,23 +23,34 @@ jobs:
       - name: System libraries (terra / netcdf)
         run: |
           sudo apt-get update
-          sudo apt-get install -y             gdal-bin libgdal-dev libproj-dev libgeos-dev             libudunits2-dev libnetcdf-dev libjpeg-dev
+          sudo apt-get install -y --no-install-recommends \
+            libgdal-dev gdal-bin \
+            libgeos-dev \
+            libproj-dev proj-data proj-bin \
+            libudunits2-dev \
+            libnetcdf-dev netcdf-bin \
+            libjpeg-dev \
+            libpng-dev \
+            libcurl4-openssl-dev \
+            libssl-dev \
+            libxml2-dev
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
 
-      - name: Setup R (use binaries where possible)
+      - name: Setup R
         uses: r-lib/actions/setup-r@v2
         with:
           use-public-rspm: true
 
-      - name: Install deps (cached)
+      - name: Install deps
         uses: r-lib/actions/setup-r-dependencies@v2
         with:
-          cache-version: 4
+          cache-version: 5
           extra-packages: |
             any::rjson
             any::terra
             any::TCHazaRds
             any::leaflet
-            any::leafem
             any::rmarkdown
             any::knitr
 
@@ -56,7 +67,8 @@ jobs:
         run: |
           mkdir -p docs
           if [ -f outputs/latest/index.csv ]; then
-            Rscript -e "rmarkdown::render('reports/haz_leaflet.Rmd', output_file='index.html', output_dir='docs', params=list(outdir='outputs/latest'))"               || (echo "<html><head><meta charset='utf-8'><title>Cyclone Ocean Waves</title></head><body><h2>Report render failed</h2><p>See the Actions logs for details.</p></body></html>" > docs/index.html)
+            Rscript -e "rmarkdown::render('reports/haz_leaflet.Rmd', output_file='index.html', output_dir='docs', params=list(outdir='outputs/latest'))" \
+              || echo "<html><head><meta charset='utf-8'><title>Cyclone Ocean Waves</title></head><body><h2>Report render failed</h2><p>See Actions logs for details.</p></body></html>" > docs/index.html
           else
             echo "<html><head><meta charset='utf-8'><title>Cyclone Ocean Waves</title></head><body><h2>No outputs yet</h2><p>outputs/latest/index.csv not found.</p></body></html>" > docs/index.html
           fi
