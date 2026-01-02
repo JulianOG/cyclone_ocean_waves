@@ -24,17 +24,15 @@ suppressPackageStartupMessages({
 is_abs_path <- function(p) {
   p <- as.character(p)
   if (is.na(p) || !nzchar(p)) return(FALSE)
-  # POSIX absolute or Windows drive absolute
   grepl("^(/|[A-Za-z]:[\\/])", p)
 }
 
 find_git_root <- function(start = getwd(), max_up = 10) {
   p <- normalizePath(start, winslash = "/", mustWork = FALSE)
   for (i in 0:max_up) {
-    cand <- p
-    if (dir.exists(file.path(cand, ".git"))) return(cand)
-    up <- normalizePath(file.path(cand, ".."), winslash = "/", mustWork = FALSE)
-    if (identical(up, cand)) break
+    if (dir.exists(file.path(p, ".git"))) return(p)
+    up <- normalizePath(file.path(p, ".."), winslash = "/", mustWork = FALSE)
+    if (identical(up, p)) break
     p <- up
   }
   ws <- Sys.getenv("GITHUB_WORKSPACE", unset = "")
@@ -46,9 +44,65 @@ git_root <- find_git_root()
 
 resolve_from_root <- function(p) {
   p <- as.character(p)
-  if (is.na(p) || !nzchar(p)) return(NA_character_)
+  if (is.na(p) || !nzchar(p) || p %in% c("NA","NULL")) return(NA_character_)
   if (is_abs_path(p)) return(p)
   file.path(git_root, p)
+}
+
+safe_minmax <- function(r) {
+  mm <- try(terra::minmax(r), silent = TRUE)
+  if (inherits(mm, "try-error") || any(!is.finite(mm))) return(c(0, 1))
+  rng <- c(mm[1,1], mm[2,1])
+  if (!all(is.finite(rng)) || diff(rng) == 0) c(rng[1], rng[1] + 1) else rng
+}
+
+make_pal <- function(r) {
+  rng <- safe_minmax(r)
+  leaflet::colorNumeric("viridis", domain = rng, na.color = "transparent")
+}
+
+to_wgs84 <- function(x) {
+  if (is.null(crs(x))) return(x)
+  out <- try(terra::project(x, "EPSG:4326"), silent = TRUE)
+  if (inherits(out, "try-error")) x else out
+}
+
+# Robust NetCDF variable loader for terra (tries multiple methods)
+load_nc_var <- function(nc_path, var) {
+  if (is.na(nc_path) || !file.exists(nc_path)) return(NULL)
+
+  # 1) terra::rast(nc, subds = "Var") (works on some GDAL builds)
+  r1 <- try(terra::rast(nc_path, subds = var), silent = TRUE)
+  if (!inherits(r1, "try-error")) return(r1)
+
+  # 2) GDAL NETCDF:<file>:<var> syntax
+  r2 <- try(terra::rast(paste0("NETCDF:", nc_path, ":", var)), silent = TRUE)
+  if (!inherits(r2, "try-error")) return(r2)
+
+  # 3) Use terra::sds() and pick matching dataset by name
+  s <- try(terra::sds(nc_path), silent = TRUE)
+  if (!inherits(s, "try-error")) {
+    nms <- names(s)
+    ii <- which(tolower(nms) == tolower(var) | grepl(var, nms, ignore.case = TRUE))
+    if (length(ii) > 0) {
+      r3 <- try(terra::rast(s[[ii[1]]]), silent = TRUE)
+      if (!inherits(r3, "try-error")) return(r3)
+    }
+  }
+
+  NULL
+}
+
+load_haz <- function(row) {
+  if (!is.null(row$haz_nc)) {
+    hs0 <- load_nc_var(row$haz_nc, "Hs0")
+    pr  <- load_nc_var(row$haz_nc, "Pr")
+    if (!is.null(hs0) && !is.null(pr)) return(list(hs0 = hs0, pr = pr))
+  }
+  # Optional GeoTIFF fallback
+  hs0 <- if (!is.null(row$haz_hs0_tif) && !is.na(row$haz_hs0_tif) && file.exists(row$haz_hs0_tif)) terra::rast(row$haz_hs0_tif) else NULL
+  pr  <- if (!is.null(row$haz_pr_tif)  && !is.na(row$haz_pr_tif)  && file.exists(row$haz_pr_tif))  terra::rast(row$haz_pr_tif)  else NULL
+  list(hs0 = hs0, pr = pr)
 }
 ```
 
@@ -58,7 +112,7 @@ idx_file <- file.path(git_root, outdir, "index.csv")
 
 if (!file.exists(idx_file)) {
   cat("<h2>No outputs yet</h2>\n")
-  cat("<p><code>", idx_file, "</code> not found. Run the daily workflow (or wait for the next schedule) and refresh.</p>\n", sep="")
+  cat("<p><code>", idx_file, "</code> not found. Run the workflow (or wait for the next schedule) and refresh.</p>\n", sep="")
   knitr::knit_exit()
 }
 
@@ -72,10 +126,10 @@ if (nrow(idx) == 0) {
   knitr::knit_exit()
 }
 
-# Resolve paths in the index to absolute paths (robust to Rmd working directory)
+# Resolve paths in index to absolute paths; coerce to character first (read.csv may infer logical if all NA)
 path_cols <- intersect(c("gpkg","haz_nc","haz_hs0_tif","haz_pr_tif","hs0_jpg","pr_jpg"), names(idx))
 for (cc in path_cols) {
-  idx[[cc]] <- as.character(idx[[cc]]) # <- crucial when a column is all NA (read.csv may infer logical)
+  idx[[cc]] <- as.character(idx[[cc]])
   idx[[cc]] <- vapply(idx[[cc]], resolve_from_root, character(1))
 }
 
@@ -85,127 +139,112 @@ idx
 ## Storm maps {.tabset}
 
 ```{r maps, results='asis'}
-to_wgs84 <- function(x) {
-  # Leaflet expects WGS84 (EPSG:4326)
-  if (is.null(crs(x))) return(x)
-  try(terra::project(x, "EPSG:4326"), silent = TRUE)
-}
-
-make_pal <- function(r) {
-  rng <- terra::minmax(r)
-  leaflet::colorNumeric("viridis", domain = c(rng[1,1], rng[2,1]), na.color = "transparent")
-}
-
-# Prefer NetCDF if present; fallback to GeoTIFFs if enabled
-load_haz <- function(row) {
-  if (!is.na(row$haz_nc) && file.exists(row$haz_nc)) {
-    return(list(
-      hs0 = terra::rast(row$haz_nc, subds = "Hs0"),
-      pr  = terra::rast(row$haz_nc, subds = "Pr")
-    ))
-  }
-  hs0 <- if (!is.na(row$haz_hs0_tif) && file.exists(row$haz_hs0_tif)) terra::rast(row$haz_hs0_tif) else NULL
-  pr  <- if (!is.na(row$haz_pr_tif)  && file.exists(row$haz_pr_tif))  terra::rast(row$haz_pr_tif)  else NULL
-  list(hs0 = hs0, pr = pr)
-}
-
 for (k in seq_len(nrow(idx))) {
   row <- idx[k, ]
+
   cat("\n\n### ", row$name, " (", row$TCid, ")\n\n", sep = "")
 
-  if (is.na(row$gpkg) || !file.exists(row$gpkg)) {
-    cat("*Track file missing:* ", row$gpkg, "\n\n", sep = "")
-    next
-  }
-  TC <- terra::vect(row$gpkg)
+  # Wrap each storm so one failure doesn't break the whole render
+  tryCatch({
 
-  haz <- load_haz(row)
-  hs0 <- haz$hs0
-  pr  <- haz$pr
+    if (is.na(row$gpkg) || !file.exists(row$gpkg)) {
+      cat("*Track file missing:* ", row$gpkg, "\n\n", sep = "")
+      return(invisible(NULL))
+    }
 
-  if (is.null(hs0) || is.null(pr)) {
-    cat("*Hazard rasters not found for this storm.*\n\n")
-    next
-  }
+    TC <- terra::vect(row$gpkg)
+    haz <- load_haz(as.list(row))
+    hs0 <- haz$hs0
+    pr  <- haz$pr
 
-  hs0_names <- names(hs0)
-  pr_names  <- names(pr)
+    if (is.null(hs0) || is.null(pr)) {
+      cat("*Hazard rasters not found (NetCDF subdatasets not readable, and no GeoTIFF fallback).* \n\n")
+      cat("Expected NetCDF: <code>", row$haz_nc, "</code>\n\n", sep = "")
+      return(invisible(NULL))
+    }
 
-  hs0_peak_i <- if (!is.na(row$hs0_peak_time)) match(row$hs0_peak_time, hs0_names) else NA_integer_
-  pr_min_i   <- if (!is.na(row$pr_min_time))   match(row$pr_min_time,  pr_names)  else NA_integer_
+    hs0_names <- names(hs0); pr_names <- names(pr)
 
-  if (is.na(hs0_peak_i)) {
-    hs0_by_t <- as.numeric(terra::global(hs0, "max", na.rm = TRUE)[,1])
-    hs0_peak_i <- if (all(is.na(hs0_by_t))) 1 else which.max(hs0_by_t)
-  }
-  if (is.na(pr_min_i)) {
-    pr_by_t <- as.numeric(terra::global(pr, "min", na.rm = TRUE)[,1])
-    pr_min_i <- if (all(is.na(pr_by_t))) 1 else which.min(pr_by_t)
-  }
+    hs0_peak_i <- if (!is.na(row$hs0_peak_time)) match(row$hs0_peak_time, hs0_names) else NA_integer_
+    pr_min_i   <- if (!is.na(row$pr_min_time))   match(row$pr_min_time,  pr_names)  else NA_integer_
 
-  hs0_peak <- hs0[[hs0_peak_i]]
-  pr_min   <- pr[[pr_min_i]]
+    if (is.na(hs0_peak_i)) {
+      hs0_by_t <- as.numeric(terra::global(hs0, "max", na.rm = TRUE)[,1])
+      hs0_peak_i <- if (all(is.na(hs0_by_t))) 1 else which.max(hs0_by_t)
+    }
+    if (is.na(pr_min_i)) {
+      pr_by_t <- as.numeric(terra::global(pr, "min", na.rm = TRUE)[,1])
+      pr_min_i <- if (all(is.na(pr_by_t))) 1 else which.min(pr_by_t)
+    }
 
-  hs0_max  <- terra::app(hs0, fun = max, na.rm = TRUE)
-  pr_min_s <- terra::app(pr,  fun = min, na.rm = TRUE)
+    hs0_peak <- hs0[[hs0_peak_i]]
+    pr_min   <- pr[[pr_min_i]]
 
-  TC_ll        <- to_wgs84(TC)
-  hs0_peak_ll  <- to_wgs84(hs0_peak)
-  hs0_max_ll   <- to_wgs84(hs0_max)
-  pr_min_ll    <- to_wgs84(pr_min)
-  pr_min_s_ll  <- to_wgs84(pr_min_s)
+    hs0_max  <- terra::app(hs0, fun = max, na.rm = TRUE)
+    pr_min_s <- terra::app(pr,  fun = min, na.rm = TRUE)
 
-  pal_hs0p <- make_pal(hs0_peak_ll)
-  pal_hs0m <- make_pal(hs0_max_ll)
-  pal_prp  <- make_pal(pr_min_ll)
-  pal_prm  <- make_pal(pr_min_s_ll)
+    TC_ll        <- to_wgs84(TC)
+    hs0_peak_ll  <- to_wgs84(hs0_peak)
+    hs0_max_ll   <- to_wgs84(hs0_max)
+    pr_min_ll    <- to_wgs84(pr_min)
+    pr_min_s_ll  <- to_wgs84(pr_min_s)
 
-  m <- leaflet() |>
-    addProviderTiles("CartoDB.Positron") |>
-    addScaleBar(position = "bottomleft") |>
-    addPolylines(
-      data = TC_ll[TC_ll$DATASET == "track", ],
-      weight = 3, opacity = 0.9,
-      group = "Track (observed)"
-    ) |>
-    addPolylines(
-      data = TC_ll[TC_ll$DATASET == "forecast", ],
-      weight = 3, opacity = 0.8, dashArray = "6,6",
-      group = "Track (forecast)"
-    ) |>
-    leafem::addRasterImage(
-      hs0_peak_ll, opacity = 0.65,
-      colors = pal_hs0p, group = paste0("Hs0 @ peak (", hs0_names[hs0_peak_i], ")")
-    ) |>
-    leafem::addRasterImage(
-      hs0_max_ll, opacity = 0.65,
-      colors = pal_hs0m, group = "Hs0 max (over time)"
-    ) |>
-    leafem::addRasterImage(
-      pr_min_ll, opacity = 0.65,
-      colors = pal_prp, group = paste0("Pressure @ min (", pr_names[pr_min_i], ")")
-    ) |>
-    leafem::addRasterImage(
-      pr_min_s_ll, opacity = 0.65,
-      colors = pal_prm, group = "Pressure min (over time)"
-    ) |>
-    addLayersControl(
-      overlayGroups = c(
-        "Track (observed)", "Track (forecast)",
-        paste0("Hs0 @ peak (", hs0_names[hs0_peak_i], ")"),
-        "Hs0 max (over time)",
-        paste0("Pressure @ min (", pr_names[pr_min_i], ")"),
-        "Pressure min (over time)"
-      ),
-      options = layersControlOptions(collapsed = FALSE)
-    )
+    pal_hs0p <- make_pal(hs0_peak_ll)
+    pal_hs0m <- make_pal(hs0_max_ll)
+    pal_prp  <- make_pal(pr_min_ll)
+    pal_prm  <- make_pal(pr_min_s_ll)
 
-  print(m)
+    m <- leaflet() |>
+      addProviderTiles("CartoDB.Positron") |>
+      addScaleBar(position = "bottomleft") |>
+      addPolylines(
+        data = TC_ll[TC_ll$DATASET == "track", ],
+        weight = 3, opacity = 0.9,
+        group = "Track (observed)"
+      ) |>
+      addPolylines(
+        data = TC_ll[TC_ll$DATASET == "forecast", ],
+        weight = 3, opacity = 0.8, dashArray = "6,6",
+        group = "Track (forecast)"
+      ) |>
+      leafem::addRasterImage(
+        hs0_peak_ll, opacity = 0.65,
+        colors = pal_hs0p, group = paste0("Hs0 @ peak (", hs0_names[hs0_peak_i], ")")
+      ) |>
+      leafem::addRasterImage(
+        hs0_max_ll, opacity = 0.65,
+        colors = pal_hs0m, group = "Hs0 max (over time)"
+      ) |>
+      leafem::addRasterImage(
+        pr_min_ll, opacity = 0.65,
+        colors = pal_prp, group = paste0("Pressure @ min (", pr_names[pr_min_i], ")")
+      ) |>
+      leafem::addRasterImage(
+        pr_min_s_ll, opacity = 0.65,
+        colors = pal_prm, group = "Pressure min (over time)"
+      ) |>
+      addLayersControl(
+        overlayGroups = c(
+          "Track (observed)", "Track (forecast)",
+          paste0("Hs0 @ peak (", hs0_names[hs0_peak_i], ")"),
+          "Hs0 max (over time)",
+          paste0("Pressure @ min (", pr_names[pr_min_i], ")"),
+          "Pressure min (over time)"
+        ),
+        options = layersControlOptions(collapsed = FALSE)
+      )
+
+    print(m)
+
+  }, error = function(e) {
+    cat("*Map failed for this storm:* ", conditionMessage(e), "\n\n", sep = "")
+  })
+
   cat("\n\n")
 }
 ```
 
 ### Notes
 
-- This report fixes an R `read.csv()` quirk: if a column is **all NA**, it can be inferred as **logical**, which broke `vapply()`. We coerce path columns to character before resolving.
-- Paths are resolved relative to the **git repo root**, so the report works reliably on GitHub Actions.
+- This report is designed to **never break the workflow**: each storm map is wrapped in `tryCatch()`.
+- NetCDF loading is robust: it tries `terra::rast(..., subds=)`, then GDAL `NETCDF:<file>:<var>`, then `terra::sds()` fallback.
