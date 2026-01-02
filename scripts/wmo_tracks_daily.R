@@ -10,6 +10,9 @@ Sys.setenv(TZ = "UTC")
 outdir <- Sys.getenv("OUTDIR", unset = file.path("outputs", "latest"))
 dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
 
+# Save full hazard rasters? (set SAVE_HAZ=0 to skip)
+save_haz <- Sys.getenv("SAVE_HAZ", unset = "1") == "1"
+
 # --- helpers ----
 
 CpFromVmax <- function(vMax, Ep = 1010) {
@@ -28,6 +31,17 @@ safe_jpeg <- function(filename, plot_fun, width = 1600, height = 1200, res = 150
     message("JPEG failed for ", filename, ": ", conditionMessage(e))
   })
   ok
+}
+
+write_haz_raster <- function(x, filename) {
+  # Write a multi-layer GeoTIFF with compression + tiling
+  terra::writeRaster(
+    x, filename, overwrite = TRUE,
+    wopt = list(
+      gdal = c("COMPRESS=DEFLATE", "ZLEVEL=6", "TILED=YES"),
+      datatype = "FLT4S"
+    )
+  )
 }
 
 json2spatVect <- function(a, varb, previous_point = NULL) {
@@ -150,9 +164,8 @@ WMO_TC_vl <- function(TCid) {
   vnl2 <- json2spatVect(a, "forecast", vnl[[2]])
   forecast <- vnl2[[1]]
 
-  # Combine as one SpatVector (avoid geometry collections)
-  TC <- rbind(track, forecast)
-  TC
+  # Combine as one SpatVector
+  rbind(track, forecast)
 }
 
 # Read params once
@@ -173,6 +186,14 @@ for (i in seq_along(TCids)) {
   hs0_jpg <- file.path(outdir, sprintf("Hs0_%03d.jpg", i))
   pr_jpg  <- file.path(outdir, sprintf("Pr_%03d.jpg",  i))
 
+  # Full hazard rasters (multi-layer)
+  haz_hs0_tif <- file.path(outdir, sprintf("haz_Hs0_%03d.tif", i))
+  haz_pr_tif  <- file.path(outdir, sprintf("haz_Pr_%03d.tif",  i))
+  haz_uw_tif  <- file.path(outdir, sprintf("haz_Uw_%03d.tif",  i))
+  haz_vw_tif  <- file.path(outdir, sprintf("haz_Vw_%03d.tif",  i))
+  haz_sw_tif  <- file.path(outdir, sprintf("haz_Sw_%03d.tif",  i))
+  haz_dw_tif  <- file.path(outdir, sprintf("haz_Dw_%03d.tif",  i))
+
   row <- data.frame(
     idx = i,
     TCid = TCid,
@@ -181,6 +202,14 @@ for (i in seq_along(TCids)) {
     gpkg = tc_gpkg,
     hs0_jpg = hs0_jpg,
     pr_jpg = pr_jpg,
+    haz_hs0_tif = if (save_haz) haz_hs0_tif else NA_character_,
+    haz_pr_tif  = if (save_haz) haz_pr_tif  else NA_character_,
+    haz_uw_tif  = if (save_haz) haz_uw_tif  else NA_character_,
+    haz_vw_tif  = if (save_haz) haz_vw_tif  else NA_character_,
+    haz_sw_tif  = if (save_haz) haz_sw_tif  else NA_character_,
+    haz_dw_tif  = if (save_haz) haz_dw_tif  else NA_character_,
+    hs0_peak_time = NA_character_,
+    pr_min_time = NA_character_,
     status = "ok",
     message = "",
     stringsAsFactors = FALSE
@@ -215,6 +244,7 @@ for (i in seq_along(TCids)) {
     tmin <- min(t_all, na.rm = TRUE)
     tmax <- max(t_all, na.rm = TRUE)
     outdate <- seq(tmin, tmax, by = 3 * 3600)
+    outdate_chr <- format(outdate, "%Y-%m-%dT%H:%M:%SZ")
 
     haz <- TCHazaRdsWindFields(
       outdate = outdate,
@@ -224,11 +254,26 @@ for (i in seq_along(TCids)) {
       return_vars = c("Pr", "Uw", "Vw", "Sw", "Dw", "Hs0")
     )
 
-    # Summary fields
+    # Name the layers so the time is carried through to the GeoTIFF bands
+    for (vn in names(haz)) {
+      try(names(haz[[vn]]) <- outdate_chr, silent = TRUE)
+    }
+
+    # Identify "peak" times (based on spatial extrema per time step)
+    hs0_by_t <- as.numeric(terra::global(haz$Hs0, "max", na.rm = TRUE)[, 1])
+    pr_by_t  <- as.numeric(terra::global(haz$Pr,  "min", na.rm = TRUE)[, 1])
+
+    hs0_peak_i <- if (all(is.na(hs0_by_t))) NA_integer_ else which.max(hs0_by_t)
+    pr_min_i   <- if (all(is.na(pr_by_t)))  NA_integer_ else which.min(pr_by_t)
+
+    if (!is.na(hs0_peak_i)) row$hs0_peak_time <- outdate_chr[hs0_peak_i]
+    if (!is.na(pr_min_i))   row$pr_min_time   <- outdate_chr[pr_min_i]
+
+    # Summary rasters
     Hs0_max <- terra::app(haz$Hs0, fun = max, na.rm = TRUE)
     Pr_min  <- terra::app(haz$Pr,  fun = min, na.rm = TRUE)
 
-    # Plots
+    # Plots (quick-look)
     safe_jpeg(hs0_jpg, function() {
       plot(Hs0_max, main = paste0("Hs0 max (", nm, " / ", TCid, ")"))
       plot(TC, add = TRUE)
@@ -238,6 +283,16 @@ for (i in seq_along(TCids)) {
       plot(Pr_min, main = paste0("Pressure min (", nm, " / ", TCid, ")"))
       plot(TC, add = TRUE)
     })
+
+    # Save full hazard rasters (multi-layer GeoTIFFs)
+    if (save_haz) {
+      write_haz_raster(haz$Hs0, haz_hs0_tif)
+      write_haz_raster(haz$Pr,  haz_pr_tif)
+      write_haz_raster(haz$Uw,  haz_uw_tif)
+      write_haz_raster(haz$Vw,  haz_vw_tif)
+      write_haz_raster(haz$Sw,  haz_sw_tif)
+      write_haz_raster(haz$Dw,  haz_dw_tif)
+    }
 
   }, error = function(e) {
     row$status <- "error"
@@ -250,7 +305,6 @@ for (i in seq_along(TCids)) {
 
 index_df <- do.call(rbind, index_rows)
 write.csv(index_df, file.path(outdir, "index.csv"), row.names = FALSE)
-
 writeLines(capture.output(sessionInfo()), file.path(outdir, "sessionInfo.txt"))
 
 message("Done. Wrote outputs to: ", normalizePath(outdir))

@@ -1,0 +1,159 @@
+---
+title: "Cyclone Ocean Waves – Daily hazard maps"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: readable
+params:
+  outdir: "outputs/latest"
+  max_storms: 10
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+suppressPackageStartupMessages({
+  library(terra)
+  library(leaflet)
+  library(leafem)
+})
+```
+
+This page reads the most recent outputs in `r params$outdir` and builds interactive maps for each in-force system.
+
+```{r load-index}
+outdir <- params$outdir
+idx_file <- file.path(outdir, "index.csv")
+stopifnot(file.exists(idx_file))
+
+idx <- read.csv(idx_file, stringsAsFactors = FALSE)
+
+# Keep successful rows and limit for page size
+idx <- idx[idx$status == "ok", , drop = FALSE]
+idx <- head(idx, params$max_storms)
+
+if (nrow(idx) == 0) {
+  stop("No successful storms found in index.csv")
+}
+
+idx
+```
+
+## Storm maps {.tabset}
+
+```{r maps, results='asis'}
+to_wgs84 <- function(x) {
+  # Leaflet expects WGS84 (EPSG:4326)
+  if (is.null(crs(x))) return(x)
+  try(terra::project(x, "EPSG:4326"), silent = TRUE)
+}
+
+make_pal <- function(r) {
+  rng <- terra::minmax(r)
+  leaflet::colorNumeric("viridis", domain = c(rng[1,1], rng[2,1]), na.color = "transparent")
+}
+
+for (k in seq_len(nrow(idx))) {
+  row <- idx[k, ]
+
+  cat("\n\n### ", row$name, " (", row$TCid, ")\n\n", sep = "")
+
+  # Track / forecast vector
+  TC <- terra::vect(row$gpkg)
+
+  # Full hazard rasters (multi-layer)
+  hs0 <- if (!is.na(row$haz_hs0_tif) && file.exists(row$haz_hs0_tif)) terra::rast(row$haz_hs0_tif) else NULL
+  pr  <- if (!is.na(row$haz_pr_tif)  && file.exists(row$haz_pr_tif))  terra::rast(row$haz_pr_tif)  else NULL
+
+  if (is.null(hs0) || is.null(pr)) {
+    cat("*Hazard rasters not found for this storm (expected haz_Hs0_***.tif and haz_Pr_***.tif).* \n\n")
+    next
+  }
+
+  # Choose layers: peak Hs0 time, min pressure time (from index if available; otherwise compute)
+  hs0_names <- names(hs0)
+  pr_names  <- names(pr)
+
+  hs0_peak_i <- if (!is.na(row$hs0_peak_time)) match(row$hs0_peak_time, hs0_names) else NA_integer_
+  pr_min_i   <- if (!is.na(row$pr_min_time))   match(row$pr_min_time,  pr_names)  else NA_integer_
+
+  if (is.na(hs0_peak_i)) {
+    hs0_by_t <- as.numeric(terra::global(hs0, "max", na.rm = TRUE)[,1])
+    hs0_peak_i <- if (all(is.na(hs0_by_t))) 1 else which.max(hs0_by_t)
+  }
+  if (is.na(pr_min_i)) {
+    pr_by_t <- as.numeric(terra::global(pr, "min", na.rm = TRUE)[,1])
+    pr_min_i <- if (all(is.na(pr_by_t))) 1 else which.min(pr_by_t)
+  }
+
+  hs0_peak <- hs0[[hs0_peak_i]]
+  pr_min   <- pr[[pr_min_i]]
+
+  hs0_max  <- terra::app(hs0, fun = max, na.rm = TRUE)
+  pr_min_s <- terra::app(pr,  fun = min, na.rm = TRUE)
+
+  # Project to EPSG:4326 for Leaflet
+  TC_ll      <- to_wgs84(TC)
+  hs0_peak_ll <- to_wgs84(hs0_peak)
+  hs0_max_ll  <- to_wgs84(hs0_max)
+  pr_min_ll   <- to_wgs84(pr_min)
+  pr_min_s_ll <- to_wgs84(pr_min_s)
+
+  # Palettes
+  pal_hs0p <- make_pal(hs0_peak_ll)
+  pal_hs0m <- make_pal(hs0_max_ll)
+  pal_prp  <- make_pal(pr_min_ll)
+  pal_prm  <- make_pal(pr_min_s_ll)
+
+  # Create map
+  m <- leaflet() |>
+    addProviderTiles("CartoDB.Positron") |>
+    addScaleBar(position = "bottomleft") |>
+    addPolylines(
+      data = TC_ll[TC_ll$DATASET == "track", ],
+      weight = 3, opacity = 0.9,
+      group = "Track (observed)"
+    ) |>
+    addPolylines(
+      data = TC_ll[TC_ll$DATASET == "forecast", ],
+      weight = 3, opacity = 0.8, dashArray = "6,6",
+      group = "Track (forecast)"
+    ) |>
+    leafem::addRasterImage(
+      hs0_peak_ll, opacity = 0.65,
+      colors = pal_hs0p, group = paste0("Hs0 @ peak (", names(hs0)[hs0_peak_i], ")")
+    ) |>
+    leafem::addRasterImage(
+      hs0_max_ll, opacity = 0.65,
+      colors = pal_hs0m, group = "Hs0 max (over time)"
+    ) |>
+    leafem::addRasterImage(
+      pr_min_ll, opacity = 0.65,
+      colors = pal_prp, group = paste0("Pressure @ min (", names(pr)[pr_min_i], ")")
+    ) |>
+    leafem::addRasterImage(
+      pr_min_s_ll, opacity = 0.65,
+      colors = pal_prm, group = "Pressure min (over time)"
+    ) |>
+    addLayersControl(
+      overlayGroups = c(
+        "Track (observed)", "Track (forecast)",
+        paste0("Hs0 @ peak (", names(hs0)[hs0_peak_i], ")"),
+        "Hs0 max (over time)",
+        paste0("Pressure @ min (", names(pr)[pr_min_i], ")"),
+        "Pressure min (over time)"
+      ),
+      options = layersControlOptions(collapsed = FALSE)
+    )
+
+  print(m)
+
+  cat("\n\n")
+}
+```
+
+### Notes
+
+- This report shows four raster layers per storm: **Hs0 at peak time**, **Hs0 max over time**, **pressure at minimum time**, and **pressure min over time**.
+- The full multi-layer hazard rasters are saved as GeoTIFFs (e.g. `haz_Hs0_001.tif`, `haz_Pr_001.tif`) and can be inspected directly with `terra::rast()`.
