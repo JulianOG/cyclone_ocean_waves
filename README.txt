@@ -1,13 +1,11 @@
-This v5 zip fixes the 'Render report (HTML)' failures by:
+Patch v7: Fix blank Leaflet maps when knitted (especially inside {.tabset}) and on GitHub Pages.
 
-1) Making the Rmd resilient:
-   - Robust NetCDF subdataset loading (tries multiple methods).
-   - Wraps each storm map in tryCatch so one bad file won't fail the whole render.
+What it changes:
+- Rmd: adds JS to trigger window resize when tabs change (Leaflet redraws)
+- Rmd: sets leaflet(height=650)
+- Rmd: self_contained:false + lib_dir:site_libs (ensures widget assets are saved in docs/site_libs)
+- Workflow: touches docs/.nojekyll (safer for Pages) and removes leafem dependency
 
-2) Making the workflow resilient:
-   - If render fails for any reason, it writes docs/index.html as a placeholder so the workflow can still commit and Pages still works.
-
-Files included:
-- scripts/wmo_tracks_daily.R
-- reports/haz_leaflet.Rmd (UPDATED)
-- .github/workflows/wmo_tracks_daily.yml (UPDATED)
+Apply by overwriting:
+- reports/haz_leaflet.Rmd
+- .github/workflows/wmo_tracks_daily.yml
