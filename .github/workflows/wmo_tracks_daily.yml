@@ -12,7 +12,7 @@ concurrency:
 
 jobs:
   run:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     permissions:
       contents: write
@@ -21,17 +21,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: System libraries (terra + sf + jpeg)
+      - name: System libraries (terra / netcdf)
         run: |
           sudo apt-get update
           sudo apt-get install -y             gdal-bin libgdal-dev libproj-dev libgeos-dev             libudunits2-dev libnetcdf-dev libjpeg-dev
 
-      - name: Setup R
+      - name: Setup R (use binaries where possible)
         uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
 
-      - name: Install deps
+      - name: Install deps (cached)
         uses: r-lib/actions/setup-r-dependencies@v2
         with:
+          cache-version: 2
           extra-packages: |
             any::rjson
             any::terra
@@ -44,14 +47,21 @@ jobs:
       - name: Run script
         env:
           OUTDIR: outputs/latest
-          SAVE_HAZ: 1
-          # MAX_TC: 2   # uncomment for quick testing
+          SAVE_NC: 1
+          SAVE_TIF: 0
+          # MAX_TC: 2
         run: |
           Rscript scripts/wmo_tracks_daily.R
 
       - name: Render report (HTML)
+        shell: bash
         run: |
-          Rscript -e "dir.create('docs', showWarnings = FALSE); rmarkdown::render('reports/haz_leaflet.Rmd', output_file='index.html', output_dir='docs', params=list(outdir='outputs/latest'))"
+          mkdir -p docs
+          if [ -f outputs/latest/index.csv ]; then
+            Rscript -e "rmarkdown::render('reports/haz_leaflet.Rmd', output_file='index.html', output_dir='docs', params=list(outdir='outputs/latest'))"
+          else
+            echo "<html><head><meta charset='utf-8'><title>Cyclone Ocean Waves</title></head><body><h2>No outputs yet</h2><p>outputs/latest/index.csv not found.</p></body></html>" > docs/index.html
+          fi
 
       - name: Commit outputs + report
         run: |

@@ -1,23 +1,15 @@
-What’s in this zip
+This zip updates your repo with:
 
 1) scripts/wmo_tracks_daily.R
-   - Updated to save the FULL hazard rasters (multi-layer GeoTIFFs):
-       outputs/latest/haz_Hs0_###.tif, haz_Pr_###.tif, haz_Uw_###.tif, etc.
-   - Adds hs0_peak_time and pr_min_time to outputs/latest/index.csv
-   - You can disable saving full rasters by setting SAVE_HAZ=0.
+   - Writes per-storm NetCDF hazard files: outputs/latest/haz_###.nc (default ON)
+   - Optional multi-layer GeoTIFFs (Hs0 + Pr) if you set SAVE_TIF=1
+   - Always writes outputs/latest/index.csv and outputs/latest/sessionInfo.txt (even if no storms)
 
 2) reports/haz_leaflet.Rmd
-   - Reads outputs/latest/index.csv and the hazard GeoTIFFs.
-   - Creates interactive Leaflet maps (via leafem) showing:
-       Hs0 at peak time + Hs0 max over time
-       Pressure at min time + Pressure min over time
-     plus observed/forecast tracks.
+   - Builds interactive Leaflet maps from NetCDF hazards (preferred), or GeoTIFFs (fallback)
+   - Exits cleanly if index.csv is missing (so the render step won't fail)
 
 3) .github/workflows/wmo_tracks_daily.yml
-   - Updated to install leaflet/leafem/rmarkdown and render docs/index.html daily.
-
-How to use
-
-- Unzip into the repo root, commit, push.
-- In GitHub: Settings → Pages → Build from /docs (optional) to publish docs/index.html.
-
+   - Uses use-public-rspm:true + dependency caching to speed installs
+   - Ensures /docs is created and always produces docs/index.html
+   - Commits outputs/latest and docs for GitHub Pages (/docs)
