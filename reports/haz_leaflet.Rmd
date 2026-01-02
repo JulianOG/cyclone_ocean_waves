@@ -20,9 +20,42 @@ suppressPackageStartupMessages({
 })
 ```
 
+```{r helpers, include=FALSE}
+is_abs_path <- function(p) {
+  if (is.na(p) || !nzchar(p)) return(FALSE)
+  # POSIX absolute or Windows drive absolute
+  grepl("^(/|[A-Za-z]:[\\/])", p)
+}
+
+find_git_root <- function(start = getwd(), max_up = 10) {
+  p <- normalizePath(start, winslash = "/", mustWork = FALSE)
+  for (i in 0:max_up) {
+    cand <- p
+    if (dir.exists(file.path(cand, ".git"))) return(cand)
+    # If we're in a subdir of the repo, walk up
+    up <- normalizePath(file.path(cand, ".."), winslash = "/", mustWork = FALSE)
+    if (identical(up, cand)) break
+    p <- up
+  }
+  # Fallback: GitHub Actions provides this
+  ws <- Sys.getenv("GITHUB_WORKSPACE", unset = "")
+  if (nzchar(ws) && dir.exists(ws)) return(normalizePath(ws, winslash = "/", mustWork = FALSE))
+  # Last resort
+  normalizePath(getwd(), winslash = "/", mustWork = FALSE)
+}
+
+git_root <- find_git_root()
+
+resolve_from_root <- function(p) {
+  if (is.na(p) || !nzchar(p)) return(p)
+  if (is_abs_path(p)) return(p)
+  file.path(git_root, p)
+}
+```
+
 ```{r load-index}
 outdir <- params$outdir
-idx_file <- file.path(outdir, "index.csv")
+idx_file <- file.path(git_root, outdir, "index.csv")
 
 if (!file.exists(idx_file)) {
   cat("<h2>No outputs yet</h2>\n")
@@ -39,6 +72,10 @@ if (nrow(idx) == 0) {
   cat("<p>The workflow ran, but did not produce any successful storm outputs.</p>\n")
   knitr::knit_exit()
 }
+
+# Resolve paths in the index to absolute paths (robust to Rmd working directory)
+path_cols <- intersect(c("gpkg","haz_nc","haz_hs0_tif","haz_pr_tif","hs0_jpg","pr_jpg"), names(idx))
+for (cc in path_cols) idx[[cc]] <- vapply(idx[[cc]], resolve_from_root, character(1))
 
 idx
 ```
@@ -57,7 +94,7 @@ make_pal <- function(r) {
   leaflet::colorNumeric("viridis", domain = c(rng[1,1], rng[2,1]), na.color = "transparent")
 }
 
-# Prefer NetCDF if present; fallback to GeoTIFFs if you enabled SAVE_TIF=1
+# Prefer NetCDF if present; fallback to GeoTIFFs if enabled
 load_haz <- function(row) {
   if (!is.na(row$haz_nc) && file.exists(row$haz_nc)) {
     return(list(
@@ -74,9 +111,8 @@ for (k in seq_len(nrow(idx))) {
   row <- idx[k, ]
   cat("\n\n### ", row$name, " (", row$TCid, ")\n\n", sep = "")
 
-  # Track / forecast vector
   if (!file.exists(row$gpkg)) {
-    cat("*Track file missing: ", row$gpkg, "*\n\n", sep = "")
+    cat("*Track file missing:* ", row$gpkg, "\n\n", sep = "")
     next
   }
   TC <- terra::vect(row$gpkg)
@@ -90,7 +126,6 @@ for (k in seq_len(nrow(idx))) {
     next
   }
 
-  # Ensure names are time strings if available
   hs0_names <- names(hs0)
   pr_names  <- names(pr)
 
@@ -112,19 +147,17 @@ for (k in seq_len(nrow(idx))) {
   hs0_max  <- terra::app(hs0, fun = max, na.rm = TRUE)
   pr_min_s <- terra::app(pr,  fun = min, na.rm = TRUE)
 
-  # Project to EPSG:4326 for Leaflet
-  TC_ll       <- to_wgs84(TC)
-  hs0_peak_ll <- to_wgs84(hs0_peak)
-  hs0_max_ll  <- to_wgs84(hs0_max)
-  pr_min_ll   <- to_wgs84(pr_min)
-  pr_min_s_ll <- to_wgs84(pr_min_s)
+  TC_ll        <- to_wgs84(TC)
+  hs0_peak_ll  <- to_wgs84(hs0_peak)
+  hs0_max_ll   <- to_wgs84(hs0_max)
+  pr_min_ll    <- to_wgs84(pr_min)
+  pr_min_s_ll  <- to_wgs84(pr_min_s)
 
   pal_hs0p <- make_pal(hs0_peak_ll)
   pal_hs0m <- make_pal(hs0_max_ll)
   pal_prp  <- make_pal(pr_min_ll)
   pal_prm  <- make_pal(pr_min_s_ll)
 
-  # Create map
   m <- leaflet() |>
     addProviderTiles("CartoDB.Positron") |>
     addScaleBar(position = "bottomleft") |>
@@ -172,5 +205,5 @@ for (k in seq_len(nrow(idx))) {
 
 ### Notes
 
+- This report resolves file paths relative to the **git repository root**, so it works even when R Markdown changes the knitting working directory.
 - Hazards are loaded from **NetCDF** (`haz_###.nc`) when present.
-- If you set `SAVE_TIF=1`, the workflow will also write GeoTIFFs for Hs0 and Pr (multi-layer).
