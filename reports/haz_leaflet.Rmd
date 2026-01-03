@@ -5,8 +5,6 @@ output:
     toc: true
     toc_float: true
     theme: readable
-    self_contained: false
-    lib_dir: "site_libs"
 params:
   outdir: "outputs/latest"
   max_storms: 10
@@ -171,7 +169,7 @@ for (k in seq_len(nrow(idx))) {
       return(invisible(NULL))
     }
 
-    # Choose representative layers
+    # Representative layers
     hs0_by_t <- as.numeric(terra::global(hs0, "max", na.rm = TRUE)[,1])
     pr_by_t  <- as.numeric(terra::global(pr,  "min", na.rm = TRUE)[,1])
     hs0_peak_i <- if (all(is.na(hs0_by_t))) 1 else which.max(hs0_by_t)
@@ -180,11 +178,9 @@ for (k in seq_len(nrow(idx))) {
     hs0_peak <- hs0[[hs0_peak_i]]
     pr_min   <- pr[[pr_min_i]]
 
-    # Over-time aggregates
     hs0_max  <- terra::app(hs0, fun = max, na.rm = TRUE)
     pr_min_s <- terra::app(pr,  fun = min, na.rm = TRUE)
 
-    # Project to EPSG:4326 for Leaflet
     TC_ll        <- to_wgs84(TC)
     hs0_peak_ll  <- to_wgs84(hs0_peak)
     hs0_max_ll   <- to_wgs84(hs0_max)

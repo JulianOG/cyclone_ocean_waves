@@ -1,11 +1,12 @@
-Patch v7: Fix blank Leaflet maps when knitted (especially inside {.tabset}) and on GitHub Pages.
+Patch v8: Fixes the rmarkdown 'relativeTo(...) descendant of docs' error.
 
-What it changes:
-- Rmd: adds JS to trigger window resize when tabs change (Leaflet redraws)
-- Rmd: sets leaflet(height=650)
-- Rmd: self_contained:false + lib_dir:site_libs (ensures widget assets are saved in docs/site_libs)
-- Workflow: touches docs/.nojekyll (safer for Pages) and removes leafem dependency
+Cause:
+- Setting self_contained:false + lib_dir in the Rmd header can make dependencies write to reports/site_libs
+  while output_dir is docs/, and rmarkdown then errors.
+
+Fix:
+- Remove self_contained/lib_dir from the header (default is self-contained HTML).
+- Keep the tabset Leaflet resize JS + explicit leaflet(height=650).
 
 Apply by overwriting:
 - reports/haz_leaflet.Rmd
-- .github/workflows/wmo_tracks_daily.yml

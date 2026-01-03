@@ -1501,21 +1501,30 @@ maps</h1>
 ##                                                                           gpkg
 ## 1 C:/Users/ogr013/GitRepoFolder/cyclone_ocean_waves/outputs/latest/TC_001.gpkg
 ## 2 C:/Users/ogr013/GitRepoFolder/cyclone_ocean_waves/outputs/latest/TC_002.gpkg
-##                                                                        hs0_jpg
-## 1 C:/Users/ogr013/GitRepoFolder/cyclone_ocean_waves/outputs/latest/Hs0_001.jpg
-## 2 C:/Users/ogr013/GitRepoFolder/cyclone_ocean_waves/outputs/latest/Hs0_002.jpg
-##                                                                        pr_jpg
-## 1 C:/Users/ogr013/GitRepoFolder/cyclone_ocean_waves/outputs/latest/Pr_001.jpg
-## 2 C:/Users/ogr013/GitRepoFolder/cyclone_ocean_waves/outputs/latest/Pr_002.jpg
+##                      hs0_jpg                    pr_jpg
+## 1 outputs/latest/Hs0_001.jpg outputs/latest/Pr_001.jpg
+## 2 outputs/latest/Hs0_002.jpg outputs/latest/Pr_002.jpg
 ##                                                                        haz_nc
 ## 1 C:/Users/ogr013/GitRepoFolder/cyclone_ocean_waves/outputs/latest/haz_001.nc
 ## 2 C:/Users/ogr013/GitRepoFolder/cyclone_ocean_waves/outputs/latest/haz_002.nc
 ##   haz_hs0_tif haz_pr_tif        hs0_peak_time          pr_min_time status
 ## 1        &lt;NA&gt;       &lt;NA&gt; 2025-12-30T12:00:00Z 2025-12-30T12:00:00Z     ok
-## 2        &lt;NA&gt;       &lt;NA&gt; 2026-01-01T18:00:00Z 2026-01-01T18:00:00Z     ok
+## 2        &lt;NA&gt;       &lt;NA&gt; 2026-01-02T06:00:00Z 2026-01-01T18:00:00Z     ok
 ##   message
 ## 1      NA
 ## 2      NA</code></pre>
+<!-- Leaflet widgets inside Bootstrap {.tabset} often render blank because the map div is hidden at first.
+     Triggering a window resize when a tab is shown forces Leaflet to redraw. -->
+<script>
+(function(){
+  function triggerResize(){ try { window.dispatchEvent(new Event('resize')); } catch(e) {} }
+  function onShown(){ setTimeout(triggerResize, 60); setTimeout(triggerResize, 250); }
+  if (window.jQuery) {
+    window.jQuery(document).on('shown.bs.tab', 'a[data-toggle="tab"]', onShown);
+  }
+  window.addEventListener('load', function(){ setTimeout(triggerResize, 200); });
+})();
+</script>
 <div id="storm-maps" class="section level2 tabset">
 <h2 class="tabset">Storm maps</h2>
 <div id="grant-2025217" class="section level3">
@@ -1523,18 +1532,6 @@ maps</h1>
 </div>
 <div id="iggy-2026001" class="section level3">
 <h3>Iggy (2026001)</h3>
-</div>
-<div id="notes" class="section level3">
-<h3>Notes</h3>
-<ul>
-<li>This report is designed to <strong>never break the
-workflow</strong>: each storm map is wrapped in
-<code>tryCatch()</code>.</li>
-<li>NetCDF loading is robust: it tries
-<code>terra::rast(..., subds=)</code>, then GDAL
-<code>NETCDF:&lt;file&gt;:&lt;var&gt;</code>, then
-<code>terra::sds()</code> fallback.</li>
-</ul>
 </div>
 </div>
 
