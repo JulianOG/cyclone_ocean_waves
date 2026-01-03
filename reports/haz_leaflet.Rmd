@@ -7,7 +7,8 @@ output:
     theme: readable
 params:
   outdir: "outputs/latest"
-  max_storms: 10
+  max_storms: 50
+  res_deg: 0.05
 ---
 
 ```{r setup, include=FALSE}
@@ -16,9 +17,7 @@ knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
 suppressPackageStartupMessages({
   library(terra)
   library(leaflet)
-  library(htmltools)
-  # leaflet::addRasterImage expects a Raster* object
-  library(raster)
+  library(htmlwidgets)
 })
 ```
 
@@ -51,48 +50,47 @@ resolve_from_root <- function(p) {
   file.path(git_root, p)
 }
 
+parse_time <- function(x) {
+  # Names are written by the runner script as "YYYY-mm-dd HH:MM:SS"
+  strptime(x, "%Y-%m-%d %H:%M:%S", tz = "UTC")
+}
+
 to_wgs84 <- function(x) {
   if (is.null(crs(x))) return(x)
   out <- try(terra::project(x, "EPSG:4326"), silent = TRUE)
   if (inherits(out, "try-error")) x else out
 }
 
-
-# Convert terra SpatRaster -> raster RasterLayer (leaflet::addRasterImage works with Raster*)
-to_raster_layer <- function(x) {
-  if (!inherits(x, "SpatRaster")) {
-    return(x)
-  }
-  if (!requireNamespace("raster", quietly = TRUE)) {
-    stop("Package 'raster' is required to display rasters in leaflet. Please install it.")
-  }
-  if (terra::nlyr(x) > 1) x <- x[[1]]
-
-  # Fast path: direct conversion (works when both terra and raster are installed)
-  out <- try(methods::as(x, "Raster"), silent = TRUE)
-  if (!inherits(out, "try-error")) return(out)
-
-  out <- try(raster::raster(x), silent = TRUE)
-  if (!inherits(out, "try-error")) return(out)
-
-  # Fallback: write temp GeoTIFF then read via raster
-  tf <- tempfile(fileext = ".tif")
-  terra::writeRaster(x, tf, overwrite = TRUE)
-  raster::raster(tf)
+safe_range <- function(r) {
+  vv <- try(terra::values(r, mat = FALSE), silent = TRUE)
+  if (inherits(vv, "try-error")) return(c(0, 1))
+  vv <- vv[is.finite(vv)]
+  if (length(vv) == 0) return(c(0, 1))
+  range(vv)
 }
 
-safe_minmax <- function(r) {
-  mm <- try(terra::minmax(r), silent = TRUE)
-  if (inherits(mm, "try-error") || any(!is.finite(mm))) return(c(0, 1))
-  rng <- c(mm[1,1], mm[2,1])
-  if (!all(is.finite(rng)) || diff(rng) == 0) c(rng[1], rng[1] + 1) else rng
+pal_fun <- function(r) leaflet::colorNumeric("viridis", domain = safe_range(r), na.color = "transparent")
+
+legend_html <- function(id, title, pal, breaks, suffix = "", show = TRUE) {
+  # breaks: numeric vector length >= 2
+  mids <- (breaks[-1] + breaks[-length(breaks)]) / 2
+  cols <- pal(mids)
+  labs <- paste0(format(breaks[-length(breaks)], trim = TRUE), "–",
+                 format(breaks[-1], trim = TRUE), suffix)
+  items <- paste0(
+    "<div class='item'><i style='background:", cols, "'></i><span>", labs, "</span></div>",
+    collapse = ""
+  )
+  disp <- if (show) "" else "display:none;"
+  paste0(
+    "<div id='", id, "' class='maplegend' style='", disp, "'>",
+    "<div class='title'>", title, "</div>",
+    items,
+    "</div>"
+  )
 }
 
-make_pal <- function(r) {
-  leaflet::colorNumeric("viridis", domain = safe_minmax(r), na.color = "transparent")
-}
-
-# Robust NetCDF variable loader for terra
+# Robust NetCDF loader
 load_nc_var <- function(nc_path, var) {
   if (is.na(nc_path) || !file.exists(nc_path)) return(NULL)
 
@@ -115,15 +113,64 @@ load_nc_var <- function(nc_path, var) {
   NULL
 }
 
-load_haz <- function(row) {
-  if (!is.na(row$haz_nc) && file.exists(row$haz_nc)) {
-    hs0 <- load_nc_var(row$haz_nc, "Hs0")
-    pr  <- load_nc_var(row$haz_nc, "Pr")
-    if (!is.null(hs0) && !is.null(pr)) return(list(hs0 = hs0, pr = pr))
+# Peak hour raster from a multi-layer raster and vector of forecast hours per layer
+peak_hour_raster <- function(x, hours_vec) {
+  if (nlyr(x) == 1) {
+    out <- x
+    values(out) <- 0
+    return(out)
   }
-  hs0 <- if (!is.na(row$haz_hs0_tif) && file.exists(row$haz_hs0_tif)) terra::rast(row$haz_hs0_tif) else NULL
-  pr  <- if (!is.na(row$haz_pr_tif)  && file.exists(row$haz_pr_tif))  terra::rast(row$haz_pr_tif)  else NULL
-  list(hs0 = hs0, pr = pr)
+  arg <- terra::app(x, fun = which.max, na.rm = TRUE)
+  terra::subst(arg, from = seq_along(hours_vec), to = hours_vec)
+}
+
+# Aggregate max value and peak-hour maps from one storm, using only forecast-time layers
+storm_products <- function(row, fc0) {
+  hs0 <- load_nc_var(row$haz_nc, "Hs0")
+  pr  <- load_nc_var(row$haz_nc, "Pr")
+  if (is.null(hs0) || is.null(pr)) return(NULL)
+
+  t_all <- parse_time(names(hs0))
+  if (all(is.na(t_all))) {
+    # fallback: assume regular 3-hourly from 0
+    hours_all <- seq(0, by = 3, length.out = nlyr(hs0))
+    keep <- rep(TRUE, nlyr(hs0))
+  } else {
+    keep <- t_all >= fc0
+    if (!any(keep, na.rm = TRUE)) keep <- rep(TRUE, length(t_all))
+    t_sel <- t_all[keep]
+    hours_all <- as.numeric(difftime(t_sel, fc0, units = "hours"))
+    hours_all[!is.finite(hours_all)] <- 0
+  }
+
+  hs0_f <- hs0[[which(keep)]]
+  pr_f  <- pr[[which(keep)]]
+
+  # Inverse barometer surge (m): (1010 - Pr)/100
+  ibs_f <- (1010 - pr_f) / 100
+
+  hs0_max <- terra::app(hs0_f, max, na.rm = TRUE)
+  ibs_max <- terra::app(ibs_f, max, na.rm = TRUE)
+
+  hs0_tpk <- peak_hour_raster(hs0_f, hours_all)
+  ibs_tpk <- peak_hour_raster(ibs_f, hours_all)
+
+  list(
+    hs0_max = hs0_max, hs0_tpk = hs0_tpk,
+    ibs_max = ibs_max, ibs_tpk = ibs_tpk
+  )
+}
+
+# Update "best" rasters by taking the storm with larger max at each cell
+update_best <- function(best_val, best_t, new_val, new_t) {
+  # align
+  new_val <- terra::resample(new_val, best_val, method = "bilinear")
+  new_t   <- terra::resample(new_t,   best_t,   method = "near")
+
+  cond <- !is.na(new_val) & (is.na(best_val) | (new_val > best_val))
+  best_val <- terra::ifel(cond, new_val, best_val)
+  best_t   <- terra::ifel(cond, new_t,   best_t)
+  list(best_val = best_val, best_t = best_t)
 }
 ```
 
@@ -147,8 +194,8 @@ if (nrow(idx) == 0) {
   knitr::knit_exit()
 }
 
-# Coerce path columns to character (read.csv may infer logical when all NA)
-path_cols <- intersect(c("gpkg","haz_nc","haz_hs0_tif","haz_pr_tif"), names(idx))
+# Resolve paths
+path_cols <- intersect(c("gpkg","haz_nc"), names(idx))
 for (cc in path_cols) {
   idx[[cc]] <- as.character(idx[[cc]])
   idx[[cc]] <- vapply(idx[[cc]], resolve_from_root, character(1))
@@ -158,107 +205,220 @@ idx
 ```
 
 ```{=html}
-<!-- Leaflet widgets inside Bootstrap {.tabset} often render blank because the map div is hidden at first.
+<style>
+.maplegend { background: rgba(255,255,255,0.92); padding: 8px 10px; border-radius: 6px; box-shadow: 0 1px 6px rgba(0,0,0,0.25); font-size: 12px; line-height: 1.2; }
+.maplegend .title { font-weight: 600; margin-bottom: 6px; }
+.maplegend .item { display: flex; align-items: center; margin: 2px 0; }
+.maplegend i { width: 14px; height: 14px; display: inline-block; margin-right: 8px; border: 1px solid rgba(0,0,0,0.15); }
+</style>
+
+<!-- Leaflet widgets inside Bootstrap {.tabset} can render blank because the map div is hidden at first.
      Triggering a window resize when a tab is shown forces Leaflet to redraw. -->
 <script>
 (function(){
   function triggerResize(){ try { window.dispatchEvent(new Event('resize')); } catch(e) {} }
-  function onShown(){ setTimeout(triggerResize, 60); setTimeout(triggerResize, 250); }
+  function onShown(){ setTimeout(triggerResize, 80); setTimeout(triggerResize, 300); }
   if (window.jQuery) {
     window.jQuery(document).on('shown.bs.tab', 'a[data-toggle="tab"]', onShown);
   }
-  window.addEventListener('load', function(){ setTimeout(triggerResize, 200); });
+  window.addEventListener('load', function(){ setTimeout(triggerResize, 250); });
 })();
 </script>
 ```
 
-## Storm maps {.tabset}
+```{r build-products}
+# First pass: load all TC tracks (for plotting) and get forecast start times + union extent
+tc_all <- list()
+exts <- list()
+fc0_vec <- rep(NA, nrow(idx))
 
-```{r maps, results='asis'}
-for (k in seq_len(nrow(idx))) {
-  row <- idx[k, ]
-  cat("\n\n### ", row$name, " (", row$TCid, ")\n\n", sep = "")
+for (i in seq_len(nrow(idx))) {
+  if (is.na(idx$gpkg[i]) || !file.exists(idx$gpkg[i])) next
+  TC <- terra::vect(idx$gpkg[i])
+  TC_ll <- to_wgs84(TC)
 
-  tryCatch({
-    if (is.na(row$gpkg) || !file.exists(row$gpkg)) {
-      cat("*Track file missing:* ", row$gpkg, "\n\n", sep = "")
-      return(invisible(NULL))
-    }
+  # Forecast start time from the first forecast segment (if present)
+  fc_times <- TC_ll$ISO_TIME[TC_ll$DATASET == "forecast"]
+  fc_times <- fc_times[!is.na(fc_times) & nzchar(fc_times)]
+  if (length(fc_times) > 0) {
+    fc0_vec[i] <- parse_time(fc_times[1])
+  } else {
+    # fallback: first time in file
+    all_times <- TC_ll$ISO_TIME[!is.na(TC_ll$ISO_TIME) & nzchar(TC_ll$ISO_TIME)]
+    fc0_vec[i] <- if (length(all_times) > 0) parse_time(all_times[1]) else Sys.time()
+  }
 
-    TC <- terra::vect(row$gpkg)
-
-    haz <- load_haz(row)
-    hs0 <- haz$hs0
-    pr  <- haz$pr
-
-    if (is.null(hs0) || is.null(pr)) {
-      cat("*Hazard rasters not found for this storm.*\n\n")
-      return(invisible(NULL))
-    }
-
-    # Representative layers
-    hs0_by_t <- as.numeric(terra::global(hs0, "max", na.rm = TRUE)[,1])
-    pr_by_t  <- as.numeric(terra::global(pr,  "min", na.rm = TRUE)[,1])
-    hs0_peak_i <- if (all(is.na(hs0_by_t))) 1 else which.max(hs0_by_t)
-    pr_min_i   <- if (all(is.na(pr_by_t)))  1 else which.min(pr_by_t)
-
-    hs0_peak <- hs0[[hs0_peak_i]]
-    pr_min   <- pr[[pr_min_i]]
-
-    hs0_max  <- terra::app(hs0, fun = max, na.rm = TRUE)
-    pr_min_s <- terra::app(pr,  fun = min, na.rm = TRUE)
-
-    TC_ll        <- to_wgs84(TC)
-    hs0_peak_ll  <- to_wgs84(hs0_peak)
-    hs0_max_ll   <- to_wgs84(hs0_max)
-    pr_min_ll    <- to_wgs84(pr_min)
-    pr_min_s_ll  <- to_wgs84(pr_min_s)
-
-    pal_hs0p <- make_pal(hs0_peak_ll)
-    pal_hs0m <- make_pal(hs0_max_ll)
-    pal_prp  <- make_pal(pr_min_ll)
-    pal_prm  <- make_pal(pr_min_s_ll)
-
-    m <- leaflet(height = 650) |>
-      addProviderTiles("CartoDB.Positron") |>
-      addScaleBar(position = "bottomleft") |>
-      addPolylines(
-        data = TC_ll[TC_ll$DATASET == "track", ],
-        weight = 3, opacity = 0.9,
-        group = "Track (observed)"
-      ) |>
-      addPolylines(
-        data = TC_ll[TC_ll$DATASET == "forecast", ],
-        weight = 3, opacity = 0.8, dashArray = "6,6",
-        group = "Track (forecast)"
-      ) |>
-      leaflet::addRasterImage(to_raster_layer(hs0_peak_ll), opacity = 0.65,
-        colors = pal_hs0p, group = "Hs0 @ peak", project = FALSE
-      ) |>
-      leaflet::addRasterImage(to_raster_layer(hs0_max_ll), opacity = 0.65,
-        colors = pal_hs0m, group = "Hs0 max (over time)", project = FALSE
-      ) |>
-      leaflet::addRasterImage(to_raster_layer(pr_min_ll), opacity = 0.65,
-        colors = pal_prp, group = "Pressure @ min", project = FALSE
-      ) |>
-      leaflet::addRasterImage(to_raster_layer(pr_min_s_ll), opacity = 0.65,
-        colors = pal_prm, group = "Pressure min (over time)"
-      ) |>
-      addLayersControl(
-        overlayGroups = c(
-          "Track (observed)", "Track (forecast)",
-          "Hs0 @ peak", "Hs0 max (over time)",
-          "Pressure @ min", "Pressure min (over time)"
-        ),
-        options = layersControlOptions(collapsed = FALSE)
-      )
-
-    print(m)
-
-  }, error = function(e) {
-    cat("*Map failed for this storm:* ", conditionMessage(e), "\n\n", sep = "")
-  })
-
-  cat("\n\n")
+  tc_all[[i]] <- TC_ll
+  exts[[i]] <- terra::ext(TC_ll)
 }
+
+# Union extent (fallback to global tropics-ish if empty)
+if (length(exts) == 0) {
+  e_union <- terra::ext(80, 200, -60, 40)
+} else {
+  e_union <- exts[[1]]
+  if (length(exts) > 1) {
+    for (j in 2:length(exts)) e_union <- terra::union(e_union, exts[[j]])
+  }
+}
+
+# Template grid for combining storms
+template <- terra::rast(ext = e_union, res = params$res_deg, crs = "EPSG:4326")
+best_hs0 <- terra::init(template, NA)
+best_hs0_t <- terra::init(template, NA)
+best_ibs <- terra::init(template, NA)
+best_ibs_t <- terra::init(template, NA)
+
+# Combine all storms cell-wise
+for (i in seq_len(nrow(idx))) {
+  row <- idx[i, , drop = FALSE]
+  if (is.na(row$haz_nc) || !file.exists(row$haz_nc)) next
+  fc0 <- fc0_vec[i]
+  if (is.na(fc0)) fc0 <- Sys.time()
+
+  prod <- try(storm_products(row, fc0), silent = TRUE)
+  if (inherits(prod, "try-error") || is.null(prod)) next
+
+  # Project to EPSG:4326 and resample onto template
+  hs0_max_ll <- to_wgs84(prod$hs0_max)
+  hs0_tpk_ll <- to_wgs84(prod$hs0_tpk)
+  ibs_max_ll <- to_wgs84(prod$ibs_max)
+  ibs_tpk_ll <- to_wgs84(prod$ibs_tpk)
+
+  # Update best for Hs0
+  up1 <- update_best(best_hs0, best_hs0_t, hs0_max_ll, hs0_tpk_ll)
+  best_hs0 <- up1$best_val
+  best_hs0_t <- up1$best_t
+
+  # Update best for IB surge
+  up2 <- update_best(best_ibs, best_ibs_t, ibs_max_ll, ibs_tpk_ll)
+  best_ibs <- up2$best_val
+  best_ibs_t <- up2$best_t
+}
+
+# Tracks combined for plotting
+TC_all <- if (length(tc_all) > 0) do.call(rbind, tc_all) else NULL
+```
+
+```{r build-maps}
+# Palettes + legends
+pal_hs0 <- pal_fun(best_hs0)
+pal_ibs <- pal_fun(best_ibs)
+pal_hs0_t <- pal_fun(best_hs0_t)
+pal_ibs_t <- pal_fun(best_ibs_t)
+
+br_hs0 <- pretty(safe_range(best_hs0), n = 6)
+br_ibs <- pretty(safe_range(best_ibs), n = 6)
+br_hs0_t <- pretty(safe_range(best_hs0_t), n = 6)
+br_ibs_t <- pretty(safe_range(best_ibs_t), n = 6)
+
+leg_max_hs0 <- legend_html("legend-max-hs0", "Max Hs0 (m)", pal_hs0, br_hs0, suffix = " m", show = TRUE)
+leg_max_ibs <- legend_html("legend-max-ibs", "Max IB surge (m)", pal_ibs, br_ibs, suffix = " m", show = FALSE)
+
+leg_t_hs0 <- legend_html("legend-time-hs0", "Hs0 peak time (forecast hr)", pal_hs0_t, br_hs0_t, suffix = " h", show = TRUE)
+leg_t_ibs <- legend_html("legend-time-ibs", "IB surge peak time (forecast hr)", pal_ibs_t, br_ibs_t, suffix = " h", show = FALSE)
+
+# Bounds for fit
+bb <- as.vector(terra::ext(template))  # xmin xmax ymin ymax
+
+base_tiles <- leaflet::providers$CartoDB.Positron
+
+m_max <- leaflet(height = 700) |>
+  addProviderTiles(base_tiles) |>
+  fitBounds(bb[1], bb[3], bb[2], bb[4])
+
+if (!is.null(TC_all)) {
+  m_max <- m_max |>
+    addPolylines(data = TC_all[TC_all$DATASET == "track", ], weight = 2, opacity = 0.9, group = "Observed track") |>
+    addPolylines(data = TC_all[TC_all$DATASET == "forecast", ], weight = 2, opacity = 0.8, dashArray = "6,6", group = "Forecast track")
+}
+
+m_max <- m_max |>
+  addRasterImage(best_hs0, colors = pal_hs0, opacity = 0.7, group = "Max Hs0 (m)") |>
+  addRasterImage(best_ibs, colors = pal_ibs, opacity = 0.7, group = "Max IB surge (m)") |>
+  addLayersControl(
+    baseGroups = c("Max Hs0 (m)", "Max IB surge (m)"),
+    overlayGroups = c("Observed track", "Forecast track"),
+    options = layersControlOptions(collapsed = FALSE)
+  ) |>
+  hideGroup("Max IB surge (m)") |>
+  addControl(leg_max_hs0, position = "bottomright") |>
+  addControl(leg_max_ibs, position = "bottomright")
+
+m_max <- htmlwidgets::onRender(m_max, "
+function(el, x) {
+  var map = this;
+  function showLegend(name){
+    var hs0 = document.getElementById('legend-max-hs0');
+    var ibs = document.getElementById('legend-max-ibs');
+    if (!hs0 || !ibs) return;
+    if (name === 'Max IB surge (m)') { hs0.style.display='none'; ibs.style.display='block'; }
+    else { hs0.style.display='block'; ibs.style.display='none'; }
+  }
+  map.on('baselayerchange', function(e){ showLegend(e.name); });
+  // initial
+  showLegend('Max Hs0 (m)');
+}
+")
+
+m_time <- leaflet(height = 700) |>
+  addProviderTiles(base_tiles) |>
+  fitBounds(bb[1], bb[3], bb[2], bb[4])
+
+if (!is.null(TC_all)) {
+  m_time <- m_time |>
+    addPolylines(data = TC_all[TC_all$DATASET == "track", ], weight = 2, opacity = 0.9, group = "Observed track") |>
+    addPolylines(data = TC_all[TC_all$DATASET == "forecast", ], weight = 2, opacity = 0.8, dashArray = "6,6", group = "Forecast track")
+}
+
+m_time <- m_time |>
+  addRasterImage(best_hs0_t, colors = pal_hs0_t, opacity = 0.7, group = "Hs0 peak time (forecast hr)") |>
+  addRasterImage(best_ibs_t, colors = pal_ibs_t, opacity = 0.7, group = "IB surge peak time (forecast hr)") |>
+  addLayersControl(
+    baseGroups = c("Hs0 peak time (forecast hr)", "IB surge peak time (forecast hr)"),
+    overlayGroups = c("Observed track", "Forecast track"),
+    options = layersControlOptions(collapsed = FALSE)
+  ) |>
+  hideGroup("IB surge peak time (forecast hr)") |>
+  addControl(leg_t_hs0, position = "bottomright") |>
+  addControl(leg_t_ibs, position = "bottomright")
+
+m_time <- htmlwidgets::onRender(m_time, "
+function(el, x) {
+  var map = this;
+  function showLegend(name){
+    var hs0 = document.getElementById('legend-time-hs0');
+    var ibs = document.getElementById('legend-time-ibs');
+    if (!hs0 || !ibs) return;
+    if (name === 'IB surge peak time (forecast hr)') { hs0.style.display='none'; ibs.style.display='block'; }
+    else { hs0.style.display='block'; ibs.style.display='none'; }
+  }
+  map.on('baselayerchange', function(e){ showLegend(e.name); });
+  showLegend('Hs0 peak time (forecast hr)');
+}
+")
+```
+
+## Maps {.tabset}
+
+### Max magnitude
+
+This map shows the **maximum across all storms** at each grid cell, for either:
+
+- **Max Hs0 (m)**, or
+- **Max inverse-barometer surge (m)**, computed as **(1010 − Pr)/100**.
+
+```{r map-max}
+m_max
+```
+
+### Peak timing
+
+This map shows the **forecast hour of the peak** at each grid cell (for the storm that produced the maximum at that cell), for either:
+
+- **Hs0 peak time (forecast hr)**, or
+- **IB surge peak time (forecast hr)**.
+
+```{r map-time}
+m_time
 ```
