@@ -16,6 +16,9 @@ knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
 suppressPackageStartupMessages({
   library(terra)
   library(leaflet)
+  library(htmltools)
+  # leaflet::addRasterImage expects a Raster* object
+  library(raster)
 })
 ```
 
@@ -52,6 +55,30 @@ to_wgs84 <- function(x) {
   if (is.null(crs(x))) return(x)
   out <- try(terra::project(x, "EPSG:4326"), silent = TRUE)
   if (inherits(out, "try-error")) x else out
+}
+
+
+# Convert terra SpatRaster -> raster RasterLayer (leaflet::addRasterImage works with Raster*)
+to_raster_layer <- function(x) {
+  if (!inherits(x, "SpatRaster")) {
+    return(x)
+  }
+  if (!requireNamespace("raster", quietly = TRUE)) {
+    stop("Package 'raster' is required to display rasters in leaflet. Please install it.")
+  }
+  if (terra::nlyr(x) > 1) x <- x[[1]]
+
+  # Fast path: direct conversion (works when both terra and raster are installed)
+  out <- try(methods::as(x, "Raster"), silent = TRUE)
+  if (!inherits(out, "try-error")) return(out)
+
+  out <- try(raster::raster(x), silent = TRUE)
+  if (!inherits(out, "try-error")) return(out)
+
+  # Fallback: write temp GeoTIFF then read via raster
+  tf <- tempfile(fileext = ".tif")
+  terra::writeRaster(x, tf, overwrite = TRUE)
+  raster::raster(tf)
 }
 
 safe_minmax <- function(r) {
@@ -205,20 +232,16 @@ for (k in seq_len(nrow(idx))) {
         weight = 3, opacity = 0.8, dashArray = "6,6",
         group = "Track (forecast)"
       ) |>
-      addRasterImage(
-        hs0_peak_ll, opacity = 0.65,
-        colors = pal_hs0p, group = "Hs0 @ peak"
+      leaflet::addRasterImage(to_raster_layer(hs0_peak_ll), opacity = 0.65,
+        colors = pal_hs0p, group = "Hs0 @ peak", project = FALSE
       ) |>
-      addRasterImage(
-        hs0_max_ll, opacity = 0.65,
-        colors = pal_hs0m, group = "Hs0 max (over time)"
+      leaflet::addRasterImage(to_raster_layer(hs0_max_ll), opacity = 0.65,
+        colors = pal_hs0m, group = "Hs0 max (over time)", project = FALSE
       ) |>
-      addRasterImage(
-        pr_min_ll, opacity = 0.65,
-        colors = pal_prp, group = "Pressure @ min"
+      leaflet::addRasterImage(to_raster_layer(pr_min_ll), opacity = 0.65,
+        colors = pal_prp, group = "Pressure @ min", project = FALSE
       ) |>
-      addRasterImage(
-        pr_min_s_ll, opacity = 0.65,
+      leaflet::addRasterImage(to_raster_layer(pr_min_s_ll), opacity = 0.65,
         colors = pal_prm, group = "Pressure min (over time)"
       ) |>
       addLayersControl(
