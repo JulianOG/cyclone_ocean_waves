@@ -217,8 +217,12 @@ for (i in seq_along(TCids)) {
     r <- rast(buffer(TC,200000), res = .2)
     #r <- rast(TC, res = rep(res(r)[1], 2))
     values(r) <- 0
-    GEO_land <- land_geometry(r, r)
-
+    
+    land_v <- vect("osm_land_polygons_simplifyGeom_0point005_areaGT1e6_aggregated/")
+    land_r = rasterize(land_v,r,touches=TRUE,background=0)
+    inland_proximity = terra::costDist(land_r,target = 0,scale=1)
+    GEO_land = land_geometry(land_r,inland_proximity)
+    
     # Time range
     t_all <- as.POSIXct(TC$ISO_TIME, tz = "UTC", format = "%Y-%m-%d %H:%M:%S")
     tmin <- min(t_all, na.rm = TRUE)
