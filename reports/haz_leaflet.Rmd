@@ -5,6 +5,7 @@ output:
     toc: true
     toc_float: true
     theme: readable
+    self_contained: true
 params:
   outdir: "outputs/latest"
   max_storms: 50
@@ -212,16 +213,43 @@ idx
 .maplegend i { width: 14px; height: 14px; display: inline-block; margin-right: 8px; border: 1px solid rgba(0,0,0,0.15); }
 </style>
 
-<!-- Leaflet widgets inside Bootstrap {.tabset} can render blank because the map div is hidden at first.
-     Triggering a window resize when a tab is shown forces Leaflet to redraw. -->
+<!--
+Leaflet widgets inside Bootstrap {.tabset} can render blank because the map div is hidden at first.
+We fix this by calling `invalidateSize()` on any Leaflet htmlwidgets when a tab becomes visible.
+-->
 <script>
 (function(){
-  function triggerResize(){ try { window.dispatchEvent(new Event('resize')); } catch(e) {} }
-  function onShown(){ setTimeout(triggerResize, 80); setTimeout(triggerResize, 300); }
+  function invalidateLeaflets(scope){
+    try {
+      if (!window.HTMLWidgets) return;
+      var root = scope || document;
+      var nodes = root.querySelectorAll('.leaflet.html-widget');
+      nodes.forEach(function(node){
+        var inst = window.HTMLWidgets.getInstance(node);
+        if (inst && inst.getMap) {
+          var map = inst.getMap();
+          if (map && map.invalidateSize) map.invalidateSize(true);
+        }
+      });
+    } catch(e) {}
+  }
+
+  function onShown(e){
+    var href = e && e.target ? e.target.getAttribute('href') : null;
+    var pane = (href && href.charAt(0) === '#') ? document.querySelector(href) : null;
+    setTimeout(function(){ invalidateLeaflets(pane); }, 120);
+    setTimeout(function(){ invalidateLeaflets(pane); }, 500);
+  }
+
+  // initial render (first tab) and after hash-based tab selection
+  window.addEventListener('load', function(){
+    setTimeout(function(){ invalidateLeaflets(document); }, 400);
+    setTimeout(function(){ invalidateLeaflets(document); }, 1200);
+  });
+
   if (window.jQuery) {
     window.jQuery(document).on('shown.bs.tab', 'a[data-toggle="tab"]', onShown);
   }
-  window.addEventListener('load', function(){ setTimeout(triggerResize, 250); });
 })();
 </script>
 ```
@@ -348,6 +376,9 @@ m_max <- m_max |>
 m_max <- htmlwidgets::onRender(m_max, "
 function(el, x) {
   var map = this;
+  // Give Leaflet a couple of chances to size itself correctly (important in tabsets)
+  setTimeout(function(){ try { map.invalidateSize(true); } catch(e) {} }, 200);
+  setTimeout(function(){ try { map.invalidateSize(true); } catch(e) {} }, 900);
   function showLegend(name){
     var hs0 = document.getElementById('legend-max-hs0');
     var ibs = document.getElementById('legend-max-ibs');
@@ -386,6 +417,8 @@ m_time <- m_time |>
 m_time <- htmlwidgets::onRender(m_time, "
 function(el, x) {
   var map = this;
+  setTimeout(function(){ try { map.invalidateSize(true); } catch(e) {} }, 200);
+  setTimeout(function(){ try { map.invalidateSize(true); } catch(e) {} }, 900);
   function showLegend(name){
     var hs0 = document.getElementById('legend-time-hs0');
     var ibs = document.getElementById('legend-time-ibs');
