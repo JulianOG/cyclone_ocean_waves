@@ -153,7 +153,7 @@ centre_for_tcid <- function(tcid) {
 }
 
 WMO_TC_vl <- function(TCid) {
-  a <- rjson::fromJSON(file = paste0("https://severeweather.wmo.int/v2/json/tc_", TCid, ".json"))
+  a <- rjson::fromJSON(file = paste0("https://severeweather.wmo.int/json/tc_", TCid, ".json"))
   vnl  <- json2spatVect(a, "track")
   track <- vnl[[1]]
   vnl2 <- json2spatVect(a, "forecast", vnl[[2]])
@@ -214,8 +214,8 @@ for (i in seq_along(TCids)) {
     terra::writeVector(TC, tc_gpkg, overwrite = TRUE)
 
     # Raster grid around track
-    r <- rast(TC, ncol = 300)
-    r <- rast(TC, res = rep(res(r)[1], 2))
+    r <- rast(buffer(TC,200000), res = .2)
+    #r <- rast(TC, res = rep(res(r)[1], 2))
     values(r) <- 0
     GEO_land <- land_geometry(r, r)
 
@@ -223,7 +223,7 @@ for (i in seq_along(TCids)) {
     t_all <- as.POSIXct(TC$ISO_TIME, tz = "UTC", format = "%Y-%m-%d %H:%M:%S")
     tmin <- min(t_all, na.rm = TRUE)
     tmax <- max(t_all, na.rm = TRUE)
-    outdate <- seq(tmin, tmax, by = 3 * 3600)
+    outdate <- seq(tmin, tmax, by = 1 * 3600)
     outdate_chr <- format(outdate, "%Y-%m-%dT%H:%M:%SZ")
 
     # Write NetCDF directly (TCHazaRds supports outfile)
