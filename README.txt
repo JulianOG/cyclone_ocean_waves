@@ -1,1 +1,1 @@
-Patch v11: single-map products across all storms (Max + Peak timing) with Hs0 vs IB surge toggles.
+Patch v13: Switch raster toggles to overlays (checkbox UI) + JS-enforced radio behaviour; adds debug ranges and stronger invalidateSize.
