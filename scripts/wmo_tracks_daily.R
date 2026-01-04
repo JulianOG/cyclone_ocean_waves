@@ -232,7 +232,7 @@ for (i in seq_along(TCids)) {
       TC = TC,
       GEO_land = GEO_land,
       paramsTable = paramsTable,
-      return_vars = c("Pr", "Uw", "Vw", "Sw", "Dw", "Hs0"),
+      return_vars = c("Pr", "Hs0"),
       outfile = if (save_nc) haz_nc else NULL,
       overwrite = TRUE
     )
