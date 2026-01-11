@@ -211,7 +211,9 @@ for (i in seq_along(TCids)) {
     row$name <- nm
 
     TC$TC_CENTRE <- row$centre
-    terra::writeVector(TC, tc_gpkg, overwrite = TRUE)
+    file.remove(tc_gpkg)
+    Sys.sleep(2)
+    terra::writeVector(TC, tc_gpkg)
 
     # Raster grid around track
     r <- rast(buffer(TC,200000), res = .2)
