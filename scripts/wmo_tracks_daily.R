@@ -12,7 +12,7 @@ unlink(outdir,recursive=TRUE,force = TRUE)
 dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
 
 # Controls (set via GitHub Actions env)
-save_tif <- Sys.getenv("SAVE_TIF", unset = "0") == "1"   # default off (large repo)
+save_tif <- Sys.getenv("SAVE_TIF", unset = "1") == "1"   # default on (not too big)
 save_nc  <- Sys.getenv("SAVE_NC",  unset = "0") == "1"   # default off (NetCDF can exceed GitHub limit)
 save_sum <- Sys.getenv("SAVE_SUMMARY", unset = "1") == "1" # default on (compact summary GeoTIFFs)
 
