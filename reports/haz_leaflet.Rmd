@@ -1,441 +1,142 @@
 ---
-title: "Cyclone Ocean Waves – Daily hazard maps"
-output:
-  html_document:
-    toc: true
-    toc_float: true
-    theme: readable
-params:
-  outdir: "outputs/latest"
-  max_storms: 50
-  res_deg: 0.05
+title: "TC coastal Hazards"
+output: html_document
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+knitr::opts_chunk$set(echo = TRUE)
+library(terra)
+library(raster)
+library(sf)
+library(leaflet)
+library(htmltools)
 
-suppressPackageStartupMessages({
-  library(terra)
-  library(leaflet)
-  library(htmlwidgets)
-})
 ```
 
 
-```{r colours}
+
+```{r shoreline}
+shoreline <- terra::vect("../osm_land_polygons_simplifyGeom_0point005_areaGT1e6_aggregated/osm_land_polygons_simplifyGeom_0point005_areaGT1e6_aggregated.shp")
+```
+
+```{r input meta}
+idx_file <- paste0("../outputs/latest/index.csv")
+idx <- tryCatch(
+  read.csv(idx_file, stringsAsFactors = FALSE, check.names = FALSE),
+  error = function(e) {
+    cat("<h2>Failed to read index.csv</h2>\n")
+    cat("<pre>", conditionMessage(e), "</pre>\n", sep="")
+    knitr::knit_exit()
+  }
+)
+idx
+```
+
+```{r input tracks}
+ntracks = dim(idx)[1]
+tracksl = lapply(1:ntracks,function(x) {y = vect(paste0("../",idx$gpkg[x]))
+                                        y$name = idx$name[x]
+                                        y$centre = idx$centre[x]
+                                        y})
+```
+
+```{r input rasters}
+hs0_files = paste0("../outputs/latest/",sprintf("haz_Hs0_%03d.tif",  1:ntracks))
+
+ibs_files = paste0("../outputs/latest/",sprintf("haz_IB_%03d.tif",  1:ntracks))
+
+Hm0l = lapply(hs0_files, function(x) raster::raster(x))
+IBsl = lapply(ibs_files, function(x) raster::raster(x))
+
+
+
+```
+
+```{r hs0 plot}
+
 colz = rev(c("#000078","#0000BB","#0000FF","#0C3AFC","#1975FA","#25B0F7","#32EBF5","#73EEE6","#B4F1D7","#F5F5C8",
              "#F5F564","#F5E032","#F6CC00","#F7A300","#F97A00","#FB5100","#FF0000","#DA0006","#B5000D","#910014",
              "#7B003D","#660066","#88008C","#AB00B2","#CD00D8","#F000FF","#CAA6DE","#DBA7DD","#EDA9D2"))#,"#FFABC7") )
 ncolz = length(colz)
 colzRamp = colorRampPalette(rev(colz))  # function: returns n evenly spaced colours when called like colzRamp(n)
 
-```
-
-```{r helpers, include=FALSE}
-is_abs_path <- function(p) {
-  p <- as.character(p)
-  if (is.na(p) || !nzchar(p)) return(FALSE)
-  grepl("^(/|[A-Za-z]:[\\/])", p)
-}
-
-find_git_root <- function(start = getwd(), max_up = 10) {
-  p <- normalizePath(start, winslash = "/", mustWork = FALSE)
-  for (i in 0:max_up) {
-    if (dir.exists(file.path(p, ".git"))) return(p)
-    up <- normalizePath(file.path(p, ".."), winslash = "/", mustWork = FALSE)
-    if (identical(up, p)) break
-    p <- up
-  }
-  ws <- Sys.getenv("GITHUB_WORKSPACE", unset = "")
-  if (nzchar(ws) && dir.exists(ws)) return(normalizePath(ws, winslash = "/", mustWork = FALSE))
-  normalizePath(getwd(), winslash = "/", mustWork = FALSE)
-}
-
-git_root <- find_git_root()
-
-resolve_from_root <- function(p) {
-  p <- as.character(p)
-  if (is.na(p) || !nzchar(p) || p %in% c("NA","NULL")) return(NA_character_)
-  if (is_abs_path(p)) return(p)
-  file.path(git_root, p)
-}
-
-parse_time <- function(x) strptime(x, "%Y-%m-%d %H:%M:%S", tz = "UTC")
-
-to_wgs84 <- function(x) {
-  if (is.null(crs(x))) return(x)
-  out <- try(terra::project(x, "EPSG:4326"), silent = TRUE)
-  if (inherits(out, "try-error")) x else out
-}
-
-finite_stats <- function(r) {
-  v <- try(terra::values(r, mat = FALSE), silent = TRUE)
-  if (inherits(v, "try-error")) return(list(n=NA, nfin=NA, rng=c(NA,NA)))
-  v <- v[is.finite(v)]
-  if (length(v) == 0) return(list(n=NA, nfin=0, rng=c(NA,NA)))
-  list(n = terra::ncell(r), nfin = length(v), rng = range(v))
-}
-
-pal_fun <- function(r) {
-  st <- finite_stats(r)
-  dom <- if (any(is.na(st$rng))) c(0,1) else st$rng
-  leaflet::colorNumeric(rev(colz), domain = dom, na.color = "transparent")
-}
-
-legend_html <- function(id, title, pal, breaks, suffix = "", show = TRUE) {
-  mids <- (breaks[-1] + breaks[-length(breaks)]) / 2
-  cols <- pal(mids)
-  labs <- paste0(format(breaks[-length(breaks)], trim = TRUE), "–",
-                 format(breaks[-1], trim = TRUE), suffix)
-  items <- paste0("<div class='item'><i style='background:", cols, "'></i><span>", labs, "</span></div>", collapse = "")
-  disp <- if (show) "" else "display:none;"
-  paste0("<div id='", id, "' class='maplegend' style='", disp, "'>",
-         "<div class='title'>", title, "</div>", items, "</div>")
-}
-
-load_nc_var <- function(nc_path, var) {
-  if (is.na(nc_path) || !file.exists(nc_path)) return(NULL)
-  r1 <- try(terra::rast(nc_path, subds = var), silent = TRUE)
-  if (!inherits(r1, "try-error")) return(r1)
-  r2 <- try(terra::rast(paste0("NETCDF:", nc_path, ":", var)), silent = TRUE)
-  if (!inherits(r2, "try-error")) return(r2)
-  s <- try(terra::sds(nc_path), silent = TRUE)
-  if (!inherits(s, "try-error")) {
-    nms <- names(s)
-    ii <- which(tolower(nms) == tolower(var) | grepl(var, nms, ignore.case = TRUE))
-    if (length(ii) > 0) {
-      r3 <- try(terra::rast(s[[ii[1]]]), silent = TRUE)
-      if (!inherits(r3, "try-error")) return(r3)
-    }
-  }
-  NULL
-}
-
-peak_hour_raster <- function(x, hours_vec) {
-  if (nlyr(x) == 1) {
-    out <- x
-    values(out) <- 0
-    return(out)
-  }
-  arg <- terra::app(x, fun = which.max, na.rm = TRUE)
-  terra::subst(arg, from = seq_along(hours_vec), to = hours_vec)
-}
-
-storm_products <- function(row, fc0) {
-  hs0 <- load_nc_var(row$haz_nc, "Hs0")
-  pr  <- load_nc_var(row$haz_nc, "Pr")
-  if (is.null(hs0) || is.null(pr)) return(NULL)
-
-  t_all <- parse_time(names(hs0))
-  if (all(is.na(t_all))) {
-    keep <- rep(TRUE, nlyr(hs0))
-    hours_all <- seq(0, by = 3, length.out = nlyr(hs0))
-  } else {
-    keep <- t_all >= fc0
-    if (!any(keep, na.rm = TRUE)) keep <- rep(TRUE, length(t_all))
-    t_sel <- t_all[keep]
-    hours_all <- as.numeric(difftime(t_sel, fc0, units = "hours"))
-    hours_all[!is.finite(hours_all)] <- 0
-  }
-
-  hs0_f <- hs0[[which(keep)]]
-  pr_f  <- pr[[which(keep)]]
-
-  ibs_f <- (1010 - pr_f) / 100  # metres
-
-  hs0_max <- terra::app(hs0_f, max, na.rm = TRUE)
-  ibs_max <- terra::app(ibs_f, max, na.rm = TRUE)
-
-  hs0_tpk <- peak_hour_raster(hs0_f, hours_all)
-  ibs_tpk <- peak_hour_raster(ibs_f, hours_all)
-
-  list(hs0_max = hs0_max, hs0_tpk = hs0_tpk, ibs_max = ibs_max, ibs_tpk = ibs_tpk)
-}
-
-update_best <- function(best_val, best_t, new_val, new_t) {
-  new_val <- terra::resample(new_val, best_val, method = "bilinear")
-  new_t   <- terra::resample(new_t,   best_t,   method = "near")
-  cond <- !is.na(new_val) & (is.na(best_val) | (new_val > best_val))
-  best_val <- terra::ifel(cond, new_val, best_val)
-  best_t   <- terra::ifel(cond, new_t,   best_t)
-  list(best_val = best_val, best_t = best_t)
+for(i in 1:ntracks){
+  tracks = vect(tracksl)
+  terra::plot(rast(Hm0l[[i]]),col = colzRamp(30),range = c(0,15),main = paste0(tracksl[[i]]$name[1]," max Hs0 [m]"))
+  terra::lines(shoreline,col="grey")
+  terra::lines(tracksl[[i]],col = "green",lwd = 3)
 }
 ```
 
-```{r load-index}
-outdir <- params$outdir
-idx_file <- file.path(git_root, outdir, "index.csv")
-
-if (!file.exists(idx_file)) {
-  cat("<h2>No outputs yet</h2>\n")
-  cat("<p><code>", idx_file, "</code> not found. Run the workflow and refresh.</p>\n", sep="")
-  knitr::knit_exit()
+```{r ib plot}
+for(i in 1:ntracks){
+  tracks = vect(tracksl)
+  terra::plot(rast(IBsl[[i]]),col = colzRamp(30),range = c(0,.75),main = paste0(tracksl[[i]]$name[1]," max IB [m]"))
+  terra::lines(shoreline,col="grey")
+  terra::lines(tracksl[[i]],col = "green",lwd = 3)
 }
-
-idx <- read.csv(idx_file, stringsAsFactors = FALSE)
-idx <- idx[idx$status == "ok", , drop = FALSE]
-idx <- head(idx, params$max_storms)
-
-if (nrow(idx) == 0) {
-  cat("<h2>No successful storms in index</h2>\n")
-  knitr::knit_exit()
-}
-
-for (cc in intersect(c("gpkg","haz_nc"), names(idx))) {
-  idx[[cc]] <- as.character(idx[[cc]])
-  idx[[cc]] <- vapply(idx[[cc]], resolve_from_root, character(1))
-}
-
-idx
 ```
 
-```{=html}
-<style>
-.maplegend { background: rgba(255,255,255,0.92); padding: 8px 10px; border-radius: 6px; box-shadow: 0 1px 6px rgba(0,0,0,0.25); font-size: 12px; line-height: 1.2; }
-.maplegend .title { font-weight: 600; margin-bottom: 6px; }
-.maplegend .item { display: flex; align-items: center; margin: 2px 0; }
-.maplegend i { width: 14px; height: 14px; display: inline-block; margin-right: 8px; border: 1px solid rgba(0,0,0,0.15); }
+```{r leaflet}
+# Convert vectors to lon/lat and to 'sp' (avoids terra::as.sf)
+shoreline_ll <- sf::read_sf("../osm_land_polygons_simplifyGeom_0point005_areaGT1e6_aggregated/osm_land_polygons_simplifyGeom_0point005_areaGT1e6_aggregated.shp")
+tracks_ll    <- lapply(tracksl, function(tr) as(terra::project(tr, "EPSG:4326"), "Spatial"))
 
-.smallnote { font-size: 0.9em; color: #444; }
-</style>
+# Palettes (uses your existing colzRamp)
+pal_hs0 <- colorNumeric(palette = colzRamp(256), domain = c(0, 15),   na.color = "transparent")
+pal_ib  <- colorNumeric(palette = colzRamp(256), domain = c(0, 0.75), na.color = "transparent")
 
-<script>
-(function(){
-  function invalidateAll() {
-    if (!window.HTMLWidgets || !HTMLWidgets.widgets) return;
-    try {
-      var els = document.querySelectorAll('.leaflet');
-      els.forEach(function(el){
-        if (el && el._leaflet_map) {
-          el._leaflet_map.invalidateSize();
-        }
-      });
-    } catch(e) {}
-    try { window.dispatchEvent(new Event('resize')); } catch(e) {}
-  }
-  function onShown(){ setTimeout(invalidateAll, 80); setTimeout(invalidateAll, 300); }
-  if (window.jQuery) {
-    window.jQuery(document).on('shown.bs.tab', 'a[data-toggle="tab"]', onShown);
-  }
-  window.addEventListener('load', function(){ setTimeout(invalidateAll, 250); setTimeout(invalidateAll, 900); });
-})();
-</script>
-```
+track_groups <- paste0("Track: ", idx$name)
 
-```{r build-products}
-tc_all <- list()
-exts <- list()
-fc0_vec <- rep(NA, nrow(idx))
 
-for (i in seq_len(nrow(idx))) {
-  if (is.na(idx$gpkg[i]) || !file.exists(idx$gpkg[i])) next
-  TC <- terra::vect(idx$gpkg[i])
-  TC_ll <- to_wgs84(TC)
+m <- leaflet(options = leafletOptions(preferCanvas = TRUE)) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addPolygons(
+    data = shoreline_ll, group = "Shoreline",
+    color = "grey", weight = 1, opacity = 0.8, fill = FALSE
+  )
 
-  fc_times <- TC_ll$ISO_TIME[TC_ll$DATASET == "forecast"]
-  fc_times <- fc_times[!is.na(fc_times) & nzchar(fc_times)]
-  if (length(fc_times) > 0) {
-    fc0_vec[i] <- parse_time(fc_times[1])
-  } else {
-    all_times <- TC_ll$ISO_TIME[!is.na(TC_ll$ISO_TIME) & nzchar(TC_ll$ISO_TIME)]
-    fc0_vec[i] <- if (length(all_times) > 0) parse_time(all_times[1]) else Sys.time()
-  }
+# Tick box per track
+for (i in seq_len(ntracks)) {
+  nm  <- idx$name[i]
+  dash <- ifelse(tracks_ll[[i]]$DATASET == "forecast", "6,8", "")
+  
+  grp <- paste0("Track: ", idx$name[i])
 
-  tc_all[[i]] <- TC_ll
-  exts[[i]] <- terra::ext(TC_ll)
+  
+
+  m <- m %>%
+    addPolylines(
+      data = tracks_ll[[i]],
+      group = grp,
+      color = "green", weight = 3, opacity = 0.9,dashArray = dash, label = nm,
+      popup = HTML(sprintf("<b>%s</b><br/>centre: %s",
+                           htmlEscape(nm), htmlEscape(idx$centre[i])))
+    )
 }
 
-if (length(exts) == 0) {
-  e_union <- terra::ext(80, 200, -60, 40)
-} else {
-  e_union <- exts[[1]]
-  if (length(exts) > 1) for (j in 2:length(exts)) e_union <- terra::union(e_union, exts[[j]])
+# Tick box per variable (Hs0 / IB)
+for (i in seq_len(ntracks)) {
+  m <- m %>%
+    addRasterImage(Hm0l[[i]], colors = pal_hs0, opacity = 0.6, project = TRUE, group = "Hs0") %>%
+    addRasterImage(IBsl[[i]], colors = pal_ib,  opacity = 0.6, project = TRUE, group = "IB")
 }
 
-template <- terra::rast(ext = e_union, res = params$res_deg, crs = "EPSG:4326")
-best_hs0   <- terra::init(template, NA)
-best_hs0_t <- terra::init(template, NA)
-best_ibs   <- terra::init(template, NA)
-best_ibs_t <- terra::init(template, NA)
-
-for (i in seq_len(nrow(idx))) {
-  row <- idx[i, , drop = FALSE]
-  if (is.na(row$haz_nc) || !file.exists(row$haz_nc)) next
-  fc0 <- fc0_vec[i]
-  if (is.na(fc0)) fc0 <- Sys.time()
-
-  prod <- try(storm_products(row, fc0), silent = TRUE)
-  if (inherits(prod, "try-error") || is.null(prod)) next
-
-  hs0_max_ll <- to_wgs84(prod$hs0_max)
-  hs0_tpk_ll <- to_wgs84(prod$hs0_tpk)
-  ibs_max_ll <- to_wgs84(prod$ibs_max)
-  ibs_tpk_ll <- to_wgs84(prod$ibs_tpk)
-
-  up1 <- update_best(best_hs0, best_hs0_t, hs0_max_ll, hs0_tpk_ll)
-  best_hs0 <- up1$best_val
-  best_hs0_t <- up1$best_t
-
-  up2 <- update_best(best_ibs, best_ibs_t, ibs_max_ll, ibs_tpk_ll)
-  best_ibs <- up2$best_val
-  best_ibs_t <- up2$best_t
-}
-
-TC_all <- if (length(tc_all) > 0) do.call(rbind, tc_all) else NULL
-bb <- as.vector(terra::ext(template))  # xmin xmax ymin ymax
-```
-
-```{r build-maps}
-pal_hs0   <- pal_fun(best_hs0)
-pal_ibs   <- pal_fun(best_ibs)
-pal_hs0_t <- pal_fun(best_hs0_t)
-pal_ibs_t <- pal_fun(best_ibs_t)
-
-br_hs0   <- pretty(finite_stats(best_hs0)$rng, n = 6)
-br_ibs   <- pretty(finite_stats(best_ibs)$rng, n = 6)
-br_hs0_t <- pretty(finite_stats(best_hs0_t)$rng, n = 6)
-br_ibs_t <- pretty(finite_stats(best_ibs_t)$rng, n = 6)
-
-leg_max_hs0 <- legend_html("legend-max-hs0", "Max Hs0 (m)", pal_hs0, br_hs0, suffix = " m", show = TRUE)
-leg_max_ibs <- legend_html("legend-max-ibs", "Max IB surge (m)", pal_ibs, br_ibs, suffix = " m", show = FALSE)
-
-leg_t_hs0 <- legend_html("legend-time-hs0", "Hs0 peak time (forecast hr)", pal_hs0_t, br_hs0_t, suffix = " h", show = TRUE)
-leg_t_ibs <- legend_html("legend-time-ibs", "IB surge peak time (forecast hr)", pal_ibs_t, br_ibs_t, suffix = " h", show = FALSE)
-
-# NOTE: use overlays (checkboxes) + JS to enforce radio behaviour.
-m_max <- leaflet(height = 700) |>
-  addProviderTiles("CartoDB.Positron") 
-
-if (!is.null(TC_all)) {
-  m_max <- m_max |>
-    addPolylines(data = TC_all[TC_all$DATASET == "track", ], weight = 2, opacity = 0.9, group = "Observed track") |>
-    addPolylines(data = TC_all[TC_all$DATASET == "forecast", ], weight = 2, opacity = 0.8, dashArray = "6,6", group = "Forecast track")
-}
-
-m_max <- m_max |>
-  addRasterImage(best_hs0, colors = pal_hs0, opacity = 0.75, group = "Max Hs0 (m)") |>
-  addRasterImage(best_ibs, colors = pal_ibs, opacity = 0.75, group = "Max IB surge (m)") |>
+m %>%
   addLayersControl(
-    overlayGroups = c("Observed track", "Forecast track", "Max Hs0 (m)", "Max IB surge (m)"),
+    overlayGroups = c("Hs0", "IB", "Shoreline", track_groups),
     options = layersControlOptions(collapsed = FALSE)
-  ) |>
-  hideGroup("Max IB surge (m)") |>
-  addControl(leg_max_hs0, position = "bottomright") |>
-  addControl(leg_max_ibs, position = "bottomright")
+  ) %>%
+  hideGroup("IB") %>%
+  addLegend(
+    pal = pal_hs0, values = c(0, 15),
+    title = "Max Hs0 [m]", position = "bottomright"
+  ) %>%
+  addLegend(
+    pal = pal_ib, values = c(0, 0.75),
+    title = "Max IB [m]", position = "bottomleft"
+  )
 
-m_max <- htmlwidgets::onRender(m_max, "
-function(el, x) {
-  var map = this;
-  // Make map retrievable for global invalidate helper
-  el._leaflet_map = map;
-
-  function setLegend(which){
-    var hs0 = document.getElementById('legend-max-hs0');
-    var ibs = document.getElementById('legend-max-ibs');
-    if (!hs0 || !ibs) return;
-    if (which === 'ibs') { hs0.style.display='none'; ibs.style.display='block'; }
-    else { hs0.style.display='block'; ibs.style.display='none'; }
-  }
-
-  // Enforce radio behaviour between the two raster overlays
-  map.on('overlayadd', function(e){
-    if (e.name === 'Max Hs0 (m)') { map.removeLayer(map.layerManager.getLayer('Max IB surge (m)')); setLegend('hs0'); }
-    if (e.name === 'Max IB surge (m)') { map.removeLayer(map.layerManager.getLayer('Max Hs0 (m)')); setLegend('ibs'); }
-  });
-
-  // Leaflet might not have layerManager; fallback by toggling groups using leaflet's group methods
-  function tryShow(group) {
-    try { map.eachLayer(function(l){ /* noop */}); } catch(err) {}
-  }
-
-  // Kick sizes
-  setLegend('hs0');
-  setTimeout(function(){ map.invalidateSize(); }, 200);
-  setTimeout(function(){ map.invalidateSize(); }, 900);
-}
-")
-
-m_time <- leaflet(height = 700) |>
-  addProviderTiles("CartoDB.Positron") 
-
-if (!is.null(TC_all)) {
-  m_time <- m_time |>
-    addPolylines(data = TC_all[TC_all$DATASET == "track", ], weight = 2, opacity = 0.9, group = "Observed track") |>
-    addPolylines(data = TC_all[TC_all$DATASET == "forecast", ], weight = 2, opacity = 0.8, dashArray = "6,6", group = "Forecast track")
-}
-
-m_time <- m_time |>
-  addRasterImage(best_hs0_t, colors = pal_hs0_t, opacity = 0.75, group = "Hs0 peak time (forecast hr)") |>
-  addRasterImage(best_ibs_t, colors = pal_ibs_t, opacity = 0.75, group = "IB surge peak time (forecast hr)") |>
-  addLayersControl(
-    overlayGroups = c("Observed track", "Forecast track", "Hs0 peak time (forecast hr)", "IB surge peak time (forecast hr)"),
-    options = layersControlOptions(collapsed = FALSE)
-  ) |>
-  hideGroup("IB surge peak time (forecast hr)") |>
-  addControl(leg_t_hs0, position = "bottomright") |>
-  addControl(leg_t_ibs, position = "bottomright")
-
-m_time <- htmlwidgets::onRender(m_time, "
-function(el, x) {
-  var map = this;
-  el._leaflet_map = map;
-
-  function setLegend(which){
-    var hs0 = document.getElementById('legend-time-hs0');
-    var ibs = document.getElementById('legend-time-ibs');
-    if (!hs0 || !ibs) return;
-    if (which === 'ibs') { hs0.style.display='none'; ibs.style.display='block'; }
-    else { hs0.style.display='block'; ibs.style.display='none'; }
-  }
-
-  map.on('overlayadd', function(e){
-    if (e.name === 'Hs0 peak time (forecast hr)') { map.removeLayer(map.layerManager.getLayer('IB surge peak time (forecast hr)')); setLegend('hs0'); }
-    if (e.name === 'IB surge peak time (forecast hr)') { map.removeLayer(map.layerManager.getLayer('Hs0 peak time (forecast hr)')); setLegend('ibs'); }
-  });
-
-  setLegend('hs0');
-  setTimeout(function(){ map.invalidateSize(); }, 200);
-  setTimeout(function(){ map.invalidateSize(); }, 900);
-}
-")
 ```
 
-## Maps {.tabset}
-
-### Max magnitude
-
-<div class="smallnote">
-This map overlays all tracks and shows either <b>Max Hs0</b> or <b>Max inverse-barometer surge</b> (IBs = (1010 − Pr)/100), using a single best-at-each-cell product across storms.
-</div>
-
-```{r debug-max}
-st1 <- finite_stats(best_hs0)
-st2 <- finite_stats(best_ibs)
-cat(sprintf("Hs0: ncell=%s, finite=%s, range=[%s, %s]\n\n",
-            st1$n, st1$nfin, st1$rng[1], st1$rng[2]))
-cat(sprintf("IBs: ncell=%s, finite=%s, range=[%s, %s]\n\n",
-            st2$n, st2$nfin, st2$rng[1], st2$rng[2]))
-```
-
-```{r map-max}
-m_max
-```
-
-### Peak timing
-
-<div class="smallnote">
-This map shows the <b>forecast hour of the peak</b> at each grid cell (for the storm that produced the maximum at that cell).
-</div>
-
-```{r debug-time}
-st3 <- finite_stats(best_hs0_t)
-st4 <- finite_stats(best_ibs_t)
-cat(sprintf("Hs0 peak hour: ncell=%s, finite=%s, range=[%s, %s]\n\n",
-            st3$n, st3$nfin, st3$rng[1], st3$rng[2]))
-cat(sprintf("IBs peak hour: ncell=%s, finite=%s, range=[%s, %s]\n\n",
-            st4$n, st4$nfin, st4$rng[1], st4$rng[2]))
-```
-
-```{r map-time}
-m_time
-```

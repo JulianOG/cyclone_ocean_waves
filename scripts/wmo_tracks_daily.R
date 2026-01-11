@@ -12,7 +12,8 @@ dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
 
 # Controls (set via GitHub Actions env)
 save_tif <- Sys.getenv("SAVE_TIF", unset = "0") == "1"   # default off (large repo)
-save_nc  <- Sys.getenv("SAVE_NC",  unset = "1") == "1"   # default on
+save_nc  <- Sys.getenv("SAVE_NC",  unset = "0") == "1"   # default off (NetCDF can exceed GitHub limit)
+save_sum <- Sys.getenv("SAVE_SUMMARY", unset = "1") == "1" # default on (compact summary GeoTIFFs)
 
 # --- helpers ----
 
@@ -41,6 +42,17 @@ write_haz_raster <- function(x, filename) {
       gdal = c("COMPRESS=DEFLATE", "ZLEVEL=6", "TILED=YES"),
       datatype = "FLT4S"
     )
+  )
+}
+
+
+
+# Write compact single-layer GeoTIFFs (compressed + tiled) suitable for committing to GitHub
+write_summary_tif <- function(r, filename, datatype = "FLT4S") {
+  dir.create(dirname(filename), recursive = TRUE, showWarnings = FALSE)
+  terra::writeRaster(
+    r, filename, overwrite = TRUE, datatype = datatype,
+    gdal = c("COMPRESS=DEFLATE", "ZLEVEL=9", "TILED=YES", "BIGTIFF=IF_SAFER")
   )
 }
 
@@ -175,13 +187,20 @@ for (i in seq_along(TCids)) {
 
   tc_gpkg <- file.path(outdir, sprintf("TC_%03d.gpkg", i))
   hs0_jpg <- file.path(outdir, sprintf("Hs0_%03d.jpg", i))
-  pr_jpg  <- file.path(outdir, sprintf("Pr_%03d.jpg",  i))
+  ib_jpg  <- file.path(outdir, sprintf("IB_%03d.jpg",  i))
 
+
+    # Compact summary rasters for the report (single-layer GeoTIFFs)
+    summary_dir <- file.path(outdir, "summary")
+    hs0_max_tif <- file.path(summary_dir, sprintf("hs0_max_%03d.tif", i))
+    hs0_tpk_tif <- file.path(summary_dir, sprintf("hs0_tpkHr_%03d.tif", i))
+    ibs_max_tif <- file.path(summary_dir, sprintf("ibs_max_%03d.tif", i))
+    ibs_tpk_tif <- file.path(summary_dir, sprintf("ibs_tpkHr_%03d.tif", i))
   haz_nc  <- file.path(outdir, sprintf("haz_%03d.nc", i))
 
   # Optional GeoTIFFs (multi-layer)
   haz_hs0_tif <- file.path(outdir, sprintf("haz_Hs0_%03d.tif", i))
-  haz_pr_tif  <- file.path(outdir, sprintf("haz_Pr_%03d.tif",  i))
+  haz_ib_tif  <- file.path(outdir, sprintf("haz_IB_%03d.tif",  i))
 
   row <- data.frame(
     idx = i,
@@ -190,12 +209,16 @@ for (i in seq_along(TCids)) {
     centre = centre_for_tcid(TCid),
     gpkg = tc_gpkg,
     hs0_jpg = hs0_jpg,
-    pr_jpg = pr_jpg,
+    ib_jpg = ib_jpg,
     haz_nc = if (save_nc) haz_nc else NA_character_,
     haz_hs0_tif = if (save_tif) haz_hs0_tif else NA_character_,
-    haz_pr_tif  = if (save_tif) haz_pr_tif  else NA_character_,
+    haz_ib_tif  = if (save_tif) haz_ib_tif  else NA_character_,
+    hs0_max_tif = hs0_max_tif,
+    hs0_tpk_tif = hs0_tpk_tif,
+    ibs_max_tif = ibs_max_tif,
+    ibs_tpk_tif = ibs_tpk_tif,
     hs0_peak_time = NA_character_,
-    pr_min_time = NA_character_,
+    ibs_peak_time = NA_character_,
     status = "ok",
     message = "",
     stringsAsFactors = FALSE
@@ -211,6 +234,7 @@ for (i in seq_along(TCids)) {
     row$name <- nm
 
     TC$TC_CENTRE <- row$centre
+    file.remove(tc_gpkg)
     terra::writeVector(TC, tc_gpkg, overwrite = TRUE)
 
     # Raster grid around track
@@ -240,7 +264,8 @@ for (i in seq_along(TCids)) {
       outfile = if (save_nc) haz_nc else NULL,
       overwrite = TRUE
     )
-
+    IB = (1010-haz$Pr)/100
+    IB = IB + (haz$Hs0/haz$Hs0-1)
     # Name layers with time strings (helps later)
     for (vn in names(haz)) {
       try(names(haz[[vn]]) <- outdate_chr, silent = TRUE)
@@ -248,32 +273,43 @@ for (i in seq_along(TCids)) {
 
     # Peak times (spatial extrema per time step)
     hs0_by_t <- as.numeric(terra::global(haz$Hs0, "max", na.rm = TRUE)[, 1])
-    pr_by_t  <- as.numeric(terra::global(haz$Pr,  "min", na.rm = TRUE)[, 1])
+    ibs_by_t  <- as.numeric(terra::global(IB,  "max", na.rm = TRUE)[, 1])
 
     hs0_peak_i <- if (all(is.na(hs0_by_t))) NA_integer_ else which.max(hs0_by_t)
-    pr_min_i   <- if (all(is.na(pr_by_t)))  NA_integer_ else which.min(pr_by_t)
+    ibs_peak_i <- if (all(is.na(ibs_by_t))) NA_integer_ else which.max(ibs_by_t)
 
     if (!is.na(hs0_peak_i)) row$hs0_peak_time <- outdate_chr[hs0_peak_i]
-    if (!is.na(pr_min_i))   row$pr_min_time   <- outdate_chr[pr_min_i]
+    if (!is.na(ibs_peak_i)) row$ibs_peak_time  <- outdate_chr[ibs_peak_i]
 
     # Quick-look maps
     Hs0_max <- terra::app(haz$Hs0, fun = max, na.rm = TRUE)
-    Pr_min  <- terra::app(haz$Pr,  fun = min, na.rm = TRUE)
+    IB_max <-  terra::app(IB    ,  fun = max, na.rm = TRUE)
+
+    # 200 km buffer outline for plots (buffer in metres in EPSG:3857)
+    buf200 <- try(terra::buffer(terra::project(TC, "EPSG:3857"), 200000), silent = TRUE)
+    if (!inherits(buf200, "try-error")) {
+      buf200 <- try(terra::project(buf200, crs(Hs0_max)), silent = TRUE)
+      if (inherits(buf200, "try-error")) buf200 <- NULL
+    } else {
+      buf200 <- NULL
+    }
 
     safe_jpeg(hs0_jpg, function() {
       plot(Hs0_max, main = paste0("Hs0 max (", nm, " / ", TCid, ")"))
+      if (!is.null(buf200)) plot(terra::aggregate(buf200), add = TRUE, border = "grey40", lwd = 2)
       plot(TC, add = TRUE)
     })
 
-    safe_jpeg(pr_jpg, function() {
-      plot(Pr_min, main = paste0("Pressure min (", nm, " / ", TCid, ")"))
+    safe_jpeg(ib_jpg, function() {
+      plot(IB_max, main = paste0("IB surge max (", nm, " / ", TCid, ")"))
+      if (!is.null(buf200)) plot(terra::aggregate(buf200), add = TRUE, border = "grey40", lwd = 2)
       plot(TC, add = TRUE)
     })
 
-    # Optional GeoTIFFs (Hs0 + Pr only; multi-layer)
+    # Optional GeoTIFFs (Hs0 + IB only; multi-layer)
     if (save_tif) {
-      write_haz_raster(haz$Hs0, haz_hs0_tif)
-      write_haz_raster(haz$Pr,  haz_pr_tif)
+      write_haz_raster(Hs0_max, haz_hs0_tif)
+      write_haz_raster(IB_max,  haz_ib_tif)
     }
 
   }, error = function(e) {

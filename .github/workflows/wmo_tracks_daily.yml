@@ -47,8 +47,9 @@ jobs:
       - name: Run script
         env:
           OUTDIR: outputs/latest
-          SAVE_NC: 1
-          SAVE_TIF: 0
+          SAVE_NC: 0
+          SAVE_TIF: 1
+          SAVE_SUMMARY: 1
         run: |
           Rscript scripts/wmo_tracks_daily.R
 
@@ -67,6 +68,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+          rm -f outputs/latest/haz_*.nc outputs/latest/haz_*.tif || true
           git add outputs/latest docs
           git commit -m "Daily WMO hazards update" || echo "No changes to commit"
           git push

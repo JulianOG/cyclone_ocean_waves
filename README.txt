@@ -1,1 +1,1 @@
-Patch v13: Switch raster toggles to overlays (checkbox UI) + JS-enforced radio behaviour; adds debug ranges and stronger invalidateSize.
+Patch v14: plot 200 km buffer outline in quicklook JPEGs; add 200 km buffer overlay + IB surge legends (leaflet addLegend) in report.
