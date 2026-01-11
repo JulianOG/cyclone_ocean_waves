@@ -196,7 +196,7 @@ for (i in seq_along(TCids)) {
 
 
     # Compact summary rasters for the report (single-layer GeoTIFFs)
-    summary_dir <- file.path(outdir, "summary")
+    summary_dir <- file.path(outdir)
     hs0_max_tif <- file.path(summary_dir, sprintf("hs0_max_%03d.tif", i))
     hs0_tpk_tif <- file.path(summary_dir, sprintf("hs0_tpkHr_%03d.tif", i))
     ibs_max_tif <- file.path(summary_dir, sprintf("ibs_max_%03d.tif", i))
@@ -276,21 +276,26 @@ for (i in seq_along(TCids)) {
     for (vn in names(haz)) {
       try(names(haz[[vn]]) <- outdate_chr, silent = TRUE)
     }
-
+    forcast_start = strptime(rev(TC$ISO_TIME[TC$DATASET == "track"])[1],"%Y-%m-%d %H:%M:%S",tz = "UTC")
+    fsi = which(outdate >= forcast_start)[1]
+    
     # Peak times (spatial extrema per time step)
     hs0_by_t <- as.numeric(terra::global(haz$Hs0, "max", na.rm = TRUE)[, 1])
-    ibs_by_t  <- as.numeric(terra::global(IB,  "max", na.rm = TRUE)[, 1])
+    ibs_by_t <- as.numeric(terra::global(IB,      "max", na.rm = TRUE)[, 1])
 
     hs0_peak_i <- if (all(is.na(hs0_by_t))) NA_integer_ else which.max(hs0_by_t)
     ibs_peak_i <- if (all(is.na(ibs_by_t))) NA_integer_ else which.max(ibs_by_t)
-
+   
     if (!is.na(hs0_peak_i)) row$hs0_peak_time <- outdate_chr[hs0_peak_i]
     if (!is.na(ibs_peak_i)) row$ibs_peak_time  <- outdate_chr[ibs_peak_i]
 
     # Quick-look maps
     Hs0_max <- terra::app(haz$Hs0, fun = max, na.rm = TRUE)
     IB_max <-  terra::app(IB    ,  fun = max, na.rm = TRUE)
-
+    
+    Hs0_which_max <- terra::app(haz$Hs0, fun = which.max, na.rm = TRUE)-fsi
+    IB_which_max <-  terra::app(IB    ,  fun = which.max, na.rm = TRUE)-fsi
+     
     # 200 km buffer outline for plots (buffer in metres in EPSG:3857)
     buf200 <- try(terra::buffer(terra::project(TC, "EPSG:3857"), 200000), silent = TRUE)
     if (!inherits(buf200, "try-error")) {
@@ -320,10 +325,17 @@ for (i in seq_along(TCids)) {
     if (save_tif) {
       file.remove(haz_hs0_tif)
       file.remove(haz_ib_tif)
+      file.remove(hs0_tpk_tif)
+      file.remove(ibs_tpk_tif)
+      
       Sys.sleep(2)
       
       write_haz_raster(Hs0_max, haz_hs0_tif)
       write_haz_raster(IB_max,  haz_ib_tif)
+
+      write_haz_raster(Hs0_which_max, hs0_tpk_tif)
+      write_haz_raster(IB_which_max, ibs_tpk_tif)
+      
     }
 
   }, error = function(e) {

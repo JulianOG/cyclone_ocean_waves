@@ -1,8 +1,19 @@
 ---
-title: "TC coastal Hazards"
+title: "TC coastal Hazard Forecast"
 output: html_document
 date: "`r format(Sys.time(), '%Y-%m-%d')`"
 ---
+```{css pre,  echo=FALSE}
+pre code {
+  display: block;
+  max-height: 6em;   /* Approximately 3 lines */
+  overflow-y: scroll;  /* Scroll vertically if content exceeds height */
+  white-space: pre-wrap; /* Prevent horizontal scrolling */
+  border: 1px solid #ddd;
+  padding: 10px;
+  background-color: #f9f9f9;
+}
+```
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
@@ -15,6 +26,10 @@ library(htmltools)
 ```
 
 
+```{r opts, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(fig.width=10, fig.height=7)
+```
 
 ```{r shoreline}
 shoreline <- terra::vect("../osm_land_polygons_simplifyGeom_0point005_areaGT1e6_aggregated/osm_land_polygons_simplifyGeom_0point005_areaGT1e6_aggregated.shp")
@@ -49,6 +64,12 @@ ibs_files = paste0("../outputs/latest/",sprintf("haz_IB_%03d.tif",  1:ntracks))
 Hm0l = lapply(hs0_files, function(x) raster::raster(x))
 IBsl = lapply(ibs_files, function(x) raster::raster(x))
 
+hs0_files = paste0("../outputs/latest/",sprintf("hs0_tpkHr_%03d.tif",  1:ntracks))
+
+ibs_files = paste0("../outputs/latest/",sprintf("ibs_tpkHr_%03d.tif",  1:ntracks))
+
+Hm0_tpkHrl = lapply(hs0_files, function(x) raster::raster(x))
+IBs_tpkHrl = lapply(ibs_files, function(x) raster::raster(x))
 
 
 ```
@@ -78,7 +99,18 @@ for(i in 1:ntracks){
 }
 ```
 
-```{r leaflet}
+
+```{r peak Hs0}
+for(i in 1:ntracks){
+  tracks = vect(tracksl)
+  terra::plot(rast(Hm0_tpkHrl[[i]]),col = colzRamp(30),type = "continuous",main = paste0(tracksl[[i]]$name[1]," Time of peak Hs0 from forecast start [hrs]"))
+  terra::lines(shoreline,col="grey")
+  terra::lines(tracksl[[i]],col = "green",lwd = 3)
+}
+```
+
+
+```{r leaflet max}
 # Convert vectors to lon/lat and to 'sp' (avoids terra::as.sf)
 shoreline_ll <- sf::read_sf("../osm_land_polygons_simplifyGeom_0point005_areaGT1e6_aggregated/osm_land_polygons_simplifyGeom_0point005_areaGT1e6_aggregated.shp")
 tracks_ll    <- lapply(tracksl, function(tr) as(terra::project(tr, "EPSG:4326"), "Spatial"))
@@ -139,4 +171,66 @@ m %>%
   )
 
 ```
+
+
+
+```{r leaflet time}
+# Convert vectors to lon/lat and to 'sp' (avoids terra::as.sf)
+shoreline_ll <- sf::read_sf("../osm_land_polygons_simplifyGeom_0point005_areaGT1e6_aggregated/osm_land_polygons_simplifyGeom_0point005_areaGT1e6_aggregated.shp")
+tracks_ll    <- lapply(tracksl, function(tr) as(terra::project(tr, "EPSG:4326"), "Spatial"))
+
+# Palettes (uses your existing colzRamp)
+pal_hs0 <- colorNumeric(palette = colzRamp(30), domain = c(-30, 30),   na.color = "transparent")
+pal_ib  <- colorNumeric(palette = colzRamp(30), domain = c(-30, 30), na.color = "transparent")
+
+track_groups <- paste0("Track: ", idx$name)
+
+
+m <- leaflet(options = leafletOptions(preferCanvas = TRUE)) %>%
+  addProviderTiles("CartoDB.Positron") %>%
+  addPolygons(
+    data = shoreline_ll, group = "Shoreline",
+    color = "grey", weight = 1, opacity = 0.8, fill = FALSE
+  )
+
+# Tick box per track
+for (i in seq_len(ntracks)) {
+  nm  <- idx$name[i]
+  dash <- ifelse(tracks_ll[[i]]$DATASET == "forecast", "6,8", "")
+  
+  grp <- paste0("Track: ", idx$name[i])
+
+  
+
+  m <- m %>%
+    addPolylines(
+      data = tracks_ll[[i]],
+      group = grp,
+      color = "green", weight = 3, opacity = 0.9,dashArray = dash, label = nm,
+      popup = HTML(sprintf("<b>%s</b><br/>centre: %s",
+                           htmlEscape(nm), htmlEscape(idx$centre[i])))
+    )
+}
+
+# Tick box per variable (Hs0 / IB)
+for (i in seq_len(ntracks)) {
+  m <- m %>%
+    addRasterImage(Hm0_tpkHrl[[i]], colors = pal_hs0, opacity = 0.6, project = TRUE, group = "Hs0") %>%
+    addRasterImage(IBs_tpkHrl[[i]], colors = pal_ib,  opacity = 0.6, project = TRUE, group = "IB")
+}
+
+m %>%
+  addLayersControl(
+    overlayGroups = c("Hs0", "IB", "Shoreline", track_groups),
+    options = layersControlOptions(collapsed = FALSE)
+  ) %>%
+  hideGroup("IB") %>%
+  addLegend(
+    pal = pal_hs0, values = c(-30, 30),
+    title = "peak time from forecast [hr]", position = "bottomright"
+  ) 
+
+
+```
+
 
