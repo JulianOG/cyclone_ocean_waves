@@ -43,6 +43,8 @@ jobs:
             any::viridisLite
             any::rmarkdown
             any::knitr
+            any::sf
+            any::tibble
 
       - name: Run script
         env:
