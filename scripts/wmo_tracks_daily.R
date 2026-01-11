@@ -8,6 +8,7 @@ Sys.setenv(TZ = "UTC")
 
 # Output folder inside the repo (works on GitHub runners)
 outdir <- Sys.getenv("OUTDIR", unset = file.path("outputs", "latest"))
+unlink(outdir,recursive=TRUE,force = TRUE)
 dir.create(outdir, recursive = TRUE, showWarnings = FALSE)
 
 # Controls (set via GitHub Actions env)
@@ -168,9 +169,13 @@ WMO_TC_vl <- function(TCid) {
   a <- rjson::fromJSON(file = paste0("https://severeweather.wmo.int/json/tc_", TCid, ".json"))
   vnl  <- json2spatVect(a, "track")
   track <- vnl[[1]]
-  vnl2 <- json2spatVect(a, "forecast", vnl[[2]])
-  forecast <- vnl2[[1]]
-  rbind(track, forecast)
+  vnl2 <- NULL
+  try(vnl2 <- json2spatVect(a, "forecast", vnl[[2]]))
+  if(!is.null(vnl2)){
+    forecast <- vnl2[[1]]
+    track = rbind(track, forecast)
+  }
+  return(track)
 }
 
 # Read params once
@@ -235,6 +240,7 @@ for (i in seq_along(TCids)) {
 
     TC$TC_CENTRE <- row$centre
     file.remove(tc_gpkg)
+    Sys.sleep(2)
     terra::writeVector(TC, tc_gpkg, overwrite = TRUE)
 
     # Raster grid around track
@@ -293,13 +299,17 @@ for (i in seq_along(TCids)) {
     } else {
       buf200 <- NULL
     }
-
+    
+    file.remove(hs0_jpg)
+    Sys.sleep(2)
     safe_jpeg(hs0_jpg, function() {
       plot(Hs0_max, main = paste0("Hs0 max (", nm, " / ", TCid, ")"))
       if (!is.null(buf200)) plot(terra::aggregate(buf200), add = TRUE, border = "grey40", lwd = 2)
       plot(TC, add = TRUE)
     })
 
+    file.remove(ib_jpg)
+    Sys.sleep(2)
     safe_jpeg(ib_jpg, function() {
       plot(IB_max, main = paste0("IB surge max (", nm, " / ", TCid, ")"))
       if (!is.null(buf200)) plot(terra::aggregate(buf200), add = TRUE, border = "grey40", lwd = 2)
@@ -308,6 +318,10 @@ for (i in seq_along(TCids)) {
 
     # Optional GeoTIFFs (Hs0 + IB only; multi-layer)
     if (save_tif) {
+      file.remove(haz_hs0_tif)
+      file.remove(haz_ib_tif)
+      Sys.sleep(2)
+      
       write_haz_raster(Hs0_max, haz_hs0_tif)
       write_haz_raster(IB_max,  haz_ib_tif)
     }
