@@ -19,7 +19,7 @@ attached base packages:
 [1] stats     graphics  grDevices utils     datasets  methods   base     
 
 other attached packages:
-[1] TCHazaRds_1.1.5 terra_1.8-86    rjson_0.2.23   
+[1] TCHazaRds_1.1.5 terra_1.8-93    rjson_0.2.23   
 
 loaded via a namespace (and not attached):
  [1] RColorBrewer_1.1-3  codetools_0.2-20    lattice_0.22-7     
