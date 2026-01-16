@@ -153,7 +153,7 @@ nTC <- if (!is.null(dim(dat))) dim(dat)[1] else 1
 inforceTC <- data.frame(array(paste(dat), dim = c(nTC, length(dat) / nTC)), stringsAsFactors = FALSE)
 names(inforceTC) <- inforce$fields
 
-TCids <- c(inforceTC$sysid, inforceTC$same)
+TCids <- as.numeric(c(inforceTC$sysid, inforceTC$same))
 TCids <- TCids[TCids != "NULL" & !is.na(TCids)]
 TCids <- unique(TCids)
 
