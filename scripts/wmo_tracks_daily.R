@@ -123,7 +123,7 @@ json2spatVect <- function(a, varb, previous_point = NULL) {
   iso_time[nchar(iso_time) == 10] <- paste(iso_time[nchar(iso_time) == 10], "00:00:00")
   
   track_v$ISO_TIME <- iso_time
-  if(track$forecast_time[1] == "NULL") track_v$forecast_time <- iso_time
+  if(!is.null(track$forecast_time[1])) if(track$forecast_time[1] == "NULL") track_v$forecast_time <- iso_time
 
   rtm <- strptime(track_v$ISO_TIME, "%Y-%m-%d %H:%M:%S", tz = "UTC")
   dt <- diff(as.numeric(rtm))
