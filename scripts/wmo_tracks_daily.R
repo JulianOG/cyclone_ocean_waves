@@ -116,8 +116,14 @@ json2spatVect <- function(a, varb, previous_point = NULL) {
   track_v$RMW_STR <- track$wind_radii[1:(nt - 1)]
 
   iso_time <- track$analysis_time[1:(nt - 1)]
+  
+  if(is.null(iso_time[1])) iso_time = format(as.POSIXct(Sys.time(), tz = "UTC")+
+                                               as.numeric(track$time_interval)/100*3600,
+                                             "%Y-%m-%d %H:00:00")
   iso_time[nchar(iso_time) == 10] <- paste(iso_time[nchar(iso_time) == 10], "00:00:00")
+  
   track_v$ISO_TIME <- iso_time
+  if(track$forecast_time[1] == "NULL") track_v$forecast_time <- iso_time
 
   rtm <- strptime(track_v$ISO_TIME, "%Y-%m-%d %H:%M:%S", tz = "UTC")
   dt <- diff(as.numeric(rtm))
@@ -167,14 +173,16 @@ centre_for_tcid <- function(tcid) {
 
 WMO_TC_vl <- function(TCid) {
   a <- rjson::fromJSON(file = paste0("https://severeweather.wmo.int/json/tc_", TCid, ".json"))
-  vnl  <- json2spatVect(a, "track")
+  vnl <- NULL
+  try(vnl  <- json2spatVect(a, "track"))
   track <- vnl[[1]]
   vnl2 <- NULL
-  try(vnl2 <- json2spatVect(a, "forecast", vnl[[2]]))
-  if(!is.null(vnl2)){
+  try(vnl2 <- json2spatVect(a=a, varb="forecast", previous_point = vnl[[2]]))
+  if(!is.null(vnl) & !is.null(vnl2)){
     forecast <- vnl2[[1]]
     track = rbind(track, forecast)
   }
+  if(is.null(vnl)) track = vnl2[[1]]
   return(track)
 }
 
@@ -278,6 +286,7 @@ for (i in seq_along(TCids)) {
     }
     forcast_start = strptime(rev(TC$ISO_TIME[TC$DATASET == "track"])[1],"%Y-%m-%d %H:%M:%S",tz = "UTC")
     fsi = which(outdate >= forcast_start)[1]
+    if(is.na(fsi)) fsi = 1
     
     # Peak times (spatial extrema per time step)
     hs0_by_t <- as.numeric(terra::global(haz$Hs0, "max", na.rm = TRUE)[, 1])

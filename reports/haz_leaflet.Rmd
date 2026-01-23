@@ -111,6 +111,16 @@ for(i in 1:ntracks){
 
 
 ```{r leaflet max}
+
+
+tropics_bbox <- matrix(
+  c(-180, -23.5,   # SW  (lon, lat)
+     180,  23.5),  # NE
+  ncol = 2,
+  byrow = TRUE
+)
+
+
 # Convert vectors to lon/lat and to 'sp' (avoids terra::as.sf)
 shoreline_ll <- sf::read_sf("../osm_land_polygons_simplifyGeom_0point005_areaGT1e6_aggregated/osm_land_polygons_simplifyGeom_0point005_areaGT1e6_aggregated.shp")
 tracks_ll    <- lapply(tracksl, function(tr) as(terra::project(tr, "EPSG:4326"), "Spatial"))
@@ -123,7 +133,11 @@ track_groups <- paste0("Track: ", idx$name)
 
 
 m <- leaflet(options = leafletOptions(preferCanvas = TRUE)) %>%
-  addProviderTiles("CartoDB.Positron") %>%
+  addProviderTiles("CartoDB.Positron")  %>%
+  fitBounds(
+    lng1 = tropics_bbox[1,1], lat1 = tropics_bbox[1,2],
+    lng2 = tropics_bbox[2,1], lat2 = tropics_bbox[2,2]
+  ) %>%
   addPolygons(
     data = shoreline_ll, group = "Shoreline",
     color = "grey", weight = 1, opacity = 0.8, fill = FALSE
@@ -187,7 +201,11 @@ track_groups <- paste0("Track: ", idx$name)
 
 
 m <- leaflet(options = leafletOptions(preferCanvas = TRUE)) %>%
-  addProviderTiles("CartoDB.Positron") %>%
+  addProviderTiles("CartoDB.Positron")  %>%
+  fitBounds(
+    lng1 = tropics_bbox[1,1], lat1 = tropics_bbox[1,2],
+    lng2 = tropics_bbox[2,1], lat2 = tropics_bbox[2,2]
+  ) %>%
   addPolygons(
     data = shoreline_ll, group = "Shoreline",
     color = "grey", weight = 1, opacity = 0.8, fill = FALSE
