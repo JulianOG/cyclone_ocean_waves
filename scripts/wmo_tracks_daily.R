@@ -274,6 +274,12 @@ for (i in seq_along(TCids)) {
     outdate_chr <- format(outdate, "%Y-%m-%dT%H:%M:%SZ")
 
     # Write NetCDF directly (TCHazaRds supports outfile)
+    
+    if(length(TC) == 1) {
+      TC2 = rbind(TC,TC)
+      TC2$ISO_TIME[2] = paste0(substr(TC2$ISO_TIME[2],1,17),"10")
+    }
+    
     haz <- TCHazaRdsWindFields(
       outdate = outdate,
       TC = TC,
