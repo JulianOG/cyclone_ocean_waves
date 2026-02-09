@@ -64,7 +64,7 @@ json2spatVect <- function(a, varb, previous_point = NULL) {
   track <- array(paste(track), dim = dim(track))
   colnames(track) <- nms
   track <- data.frame(track, stringsAsFactors = FALSE)
-
+  track <- track[!is.na(track$lng),]
   # Prepend last observed point to the start of the forecast so line segments connect
   if (!is.null(previous_point) && NROW(previous_point) >= 1) {
     track <- rbind(NA, track)
