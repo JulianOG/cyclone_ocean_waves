@@ -26,6 +26,6 @@ loaded via a namespace (and not attached):
  [4] hexbin_1.28.5       rasterVis_0.51.7    zoo_1.8-15         
  [7] raster_3.6-32       jpeg_0.1-11         latticeExtra_0.6-31
 [10] parallel_4.5.2      deldir_2.0-4        png_0.1-8          
-[13] viridisLite_0.4.3   geosphere_1.5-20    grid_4.5.2         
+[13] viridisLite_0.4.3   geosphere_1.6-5     grid_4.5.2         
 [16] interp_1.1-6        ncdf4_1.24          compiler_4.5.2     
 [19] tools_4.5.2         sp_2.2-1            Rcpp_1.1.1         
