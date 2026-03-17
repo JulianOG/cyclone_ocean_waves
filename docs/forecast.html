@@ -3,22 +3,92 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Tropical Cyclone Forecast</title>
+    <title>Cyclone Data Landing Page</title>
     <style>
-        body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
-        header { background: #0095D9; color: #fff; padding: 1rem; text-align: center; }
-        main { padding: 1rem; }
-        table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
-        th, td { padding: 0.5rem; border: 1px solid #ddd; text-align: left; }
-        th { background: #f2f2f2; }
-        a { color: #0095D9; text-decoration: none; }
-        @media (max-width: 600px) { table { font-size: 0.8rem; } }
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f4f4f4;
+            color: #333;
+        }
+        header {
+            background: #007BFF;
+            color: #fff;
+            padding: 10px 20px;
+            text-align: center;
+        }
+        main {
+            padding: 20px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 8px;
+            text-align: left;
+        }
+        th {
+            background-color: #007BFF;
+            color: white;
+        }
+        a {
+            display: inline-block;
+            margin-top: 20px;
+            background: #28a745;
+            color: white;
+            padding: 10px 15px;
+            text-decoration: none;
+            border-radius: 5px;
+        }
+        a:hover {
+            background: #218838;
+        }
     </style>
 </head>
 <body>
     <header>
-        <h1>Tropical Cyclone Forecast</h1>
-        <p>Active Tropical Cyclones and Their Hazards</p>
+        <h1>Cyclone Data Overview</h1>
     </header>
     <main>
-        <p>For more detailed information, visit the <a href=\
+        <h2>Latest Cyclone Data</h2>
+        <table id="cycloneData">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Type</th>
+                    <th>Intensity</th>
+                    <th>Location</th>
+                </tr>
+            </thead>
+            <tbody>
+                <!-- Dynamic Data will be inserted here -->
+            </tbody>
+        </table>
+        <a href="index.html">View Full Interactive Report</a>
+    </main>
+    <script>
+        async function loadCycloneData() {
+            const response = await fetch('outputs/latest/index.csv');
+            const data = await response.text();
+            const rows = data.split('\n');
+            const tbody = document.querySelector('#cycloneData tbody');
+            rows.forEach((row, index) => {
+                if (index === 0) return; // Skip header row
+                const cols = row.split(',');
+                const tr = document.createElement('tr');
+                cols.forEach(col => {
+                    const td = document.createElement('td');
+                    td.textContent = col;
+                    tr.appendChild(td);
+                });
+                tbody.appendChild(tr);
+            });
+        }
+        loadCycloneData();
+    </script>
+</body>
+</html>
