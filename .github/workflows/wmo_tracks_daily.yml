@@ -67,37 +67,64 @@ jobs:
         run: |
           Rscript scripts/wmo_tracks_daily.R
 
-      - name: Render report (HTML)
+      - name: Render reports (HTML)
         shell: bash
         run: |
           mkdir -p docs
           touch docs/.nojekyll
 
           if [ -f outputs/latest/index.csv ]; then
-            Rscript -e "rmarkdown::render('reports/haz_leaflet_coast_query_points.Rmd', output_file='index.html', output_dir='docs')" || cat > docs/index.html <<'EOF'
-            Rscript -e "rmarkdown::render('reports/haz_leaflet.Rmd', output_file='index_raw.html', output_dir='docs')"
-<!doctype html>
-<html>
-<head><meta charset="utf-8"><title>Cyclone Ocean Waves</title></head>
-<body>
-<h1>Cyclone Ocean Waves</h1>
-<h2>Report render failed</h2>
-<p>See the GitHub Actions logs for details.</p>
-</body>
-</html>
-EOF
+            if ! Rscript -e "rmarkdown::render('reports/haz_leaflet_coast_query_points.Rmd', output_file='index.html', output_dir='docs')"; then
+              cat > docs/index.html <<'EOF'
+              <!doctype html>
+              <html>
+              <head><meta charset="utf-8"><title>Cyclone Ocean Waves</title></head>
+              <body>
+              <h1>Cyclone Ocean Waves</h1>
+              <h2>Report render failed</h2>
+              <p>See the GitHub Actions logs for details.</p>
+              </body>
+              </html>
+              EOF
+            fi
+
+            if ! Rscript -e "rmarkdown::render('reports/haz_leaflet.Rmd', output_file='index_raw.html', output_dir='docs')"; then
+              cat > docs/index_raw.html <<'EOF'
+              <!doctype html>
+              <html>
+              <head><meta charset="utf-8"><title>Cyclone Ocean Waves</title></head>
+              <body>
+              <h1>Cyclone Ocean Waves</h1>
+              <h2>Raw report render failed</h2>
+              <p>See the GitHub Actions logs for details.</p>
+              </body>
+              </html>
+              EOF
+            fi
           else
             cat > docs/index.html <<'EOF'
-<!doctype html>
-<html>
-<head><meta charset="utf-8"><title>Cyclone Ocean Waves</title></head>
-<body>
-<h1>Cyclone Ocean Waves</h1>
-<h2>No outputs yet</h2>
-<p><code>outputs/latest/index.csv</code> was not found.</p>
-</body>
-</html>
-EOF
+            <!doctype html>
+            <html>
+            <head><meta charset="utf-8"><title>Cyclone Ocean Waves</title></head>
+            <body>
+            <h1>Cyclone Ocean Waves</h1>
+            <h2>No outputs yet</h2>
+            <p><code>outputs/latest/index.csv</code> was not found.</p>
+            </body>
+            </html>
+            EOF
+
+            cat > docs/index_raw.html <<'EOF'
+            <!doctype html>
+            <html>
+            <head><meta charset="utf-8"><title>Cyclone Ocean Waves</title></head>
+            <body>
+            <h1>Cyclone Ocean Waves</h1>
+            <h2>No outputs yet</h2>
+            <p><code>outputs/latest/index.csv</code> was not found.</p>
+            </body>
+            </html>
+            EOF
           fi
 
       - name: Commit outputs + report
@@ -107,6 +134,6 @@ EOF
 
           rm -f outputs/latest/haz_*.nc outputs/latest/haz_*.tif || true
 
-          git add outputs/latest docs .github/workflows/wmo_tracks_daily.yml reports/haz_leaflet_coast_query_points_v6.Rmd
+          git add outputs/latest docs .github/workflows/wmo_tracks_daily.yml reports/haz_leaflet_coast_query_points.Rmd reports/haz_leaflet.Rmd
           git commit -m "Daily WMO hazards update" || echo "No changes to commit"
           git push
