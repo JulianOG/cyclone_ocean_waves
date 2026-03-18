@@ -75,56 +75,16 @@ jobs:
 
           if [ -f outputs/latest/index.csv ]; then
             if ! Rscript -e "rmarkdown::render('reports/haz_leaflet_coast_query_points.Rmd', output_file='index.html', output_dir='docs')"; then
-              cat > docs/index.html <<'EOF'
-              <!doctype html>
-              <html>
-              <head><meta charset="utf-8"><title>Cyclone Ocean Waves</title></head>
-              <body>
-              <h1>Cyclone Ocean Waves</h1>
-              <h2>Report render failed</h2>
-              <p>See the GitHub Actions logs for details.</p>
-              </body>
-              </html>
-              EOF
+              printf '%s\n'                 '<!doctype html>'                 '<html>'                 '<head><meta charset="utf-8"><title>Cyclone Ocean Waves</title></head>'                 '<body>'                 '<h1>Cyclone Ocean Waves</h1>'                 '<h2>Report render failed</h2>'                 '<p>See the GitHub Actions logs for details.</p>'                 '</body>'                 '</html>' > docs/index.html
             fi
 
             if ! Rscript -e "rmarkdown::render('reports/haz_leaflet.Rmd', output_file='index_raw.html', output_dir='docs')"; then
-              cat > docs/index_raw.html <<'EOF'
-              <!doctype html>
-              <html>
-              <head><meta charset="utf-8"><title>Cyclone Ocean Waves</title></head>
-              <body>
-              <h1>Cyclone Ocean Waves</h1>
-              <h2>Raw report render failed</h2>
-              <p>See the GitHub Actions logs for details.</p>
-              </body>
-              </html>
-              EOF
+              printf '%s\n'                 '<!doctype html>'                 '<html>'                 '<head><meta charset="utf-8"><title>Cyclone Ocean Waves</title></head>'                 '<body>'                 '<h1>Cyclone Ocean Waves</h1>'                 '<h2>Raw report render failed</h2>'                 '<p>See the GitHub Actions logs for details.</p>'                 '</body>'                 '</html>' > docs/index_raw.html
             fi
           else
-            cat > docs/index.html <<'EOF'
-            <!doctype html>
-            <html>
-            <head><meta charset="utf-8"><title>Cyclone Ocean Waves</title></head>
-            <body>
-            <h1>Cyclone Ocean Waves</h1>
-            <h2>No outputs yet</h2>
-            <p><code>outputs/latest/index.csv</code> was not found.</p>
-            </body>
-            </html>
-            EOF
+            printf '%s\n'               '<!doctype html>'               '<html>'               '<head><meta charset="utf-8"><title>Cyclone Ocean Waves</title></head>'               '<body>'               '<h1>Cyclone Ocean Waves</h1>'               '<h2>No outputs yet</h2>'               '<p><code>outputs/latest/index.csv</code> was not found.</p>'               '</body>'               '</html>' > docs/index.html
 
-            cat > docs/index_raw.html <<'EOF'
-            <!doctype html>
-            <html>
-            <head><meta charset="utf-8"><title>Cyclone Ocean Waves</title></head>
-            <body>
-            <h1>Cyclone Ocean Waves</h1>
-            <h2>No outputs yet</h2>
-            <p><code>outputs/latest/index.csv</code> was not found.</p>
-            </body>
-            </html>
-            EOF
+            printf '%s\n'               '<!doctype html>'               '<html>'               '<head><meta charset="utf-8"><title>Cyclone Ocean Waves</title></head>'               '<body>'               '<h1>Cyclone Ocean Waves</h1>'               '<h2>No outputs yet</h2>'               '<p><code>outputs/latest/index.csv</code> was not found.</p>'               '</body>'               '</html>' > docs/index_raw.html
           fi
 
       - name: Commit outputs + report
