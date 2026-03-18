@@ -1,0 +1,595 @@
+---
+title: "Tropical cyclone coastal impacts"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_float: true
+    code_folding: hide
+    self_contained: true
+params:
+  show_tracks: true
+  map_height: 700
+  tiles: "CartoDB.PositronNoLabels"
+  hs_legend_max: 15
+  ib_legend_max: 0.75
+  point_radius: 3
+  max_query_points: null
+  track_weight: 2.5
+  track_opacity: 0.85
+  track_color: "#2d3748"
+date: "`r format(Sys.time(), '%Y-%m-%d %H:%M UTC', tz = 'UTC')`"
+---
+
+```{css, echo=FALSE}
+body { font-size: 16px; }
+.note-box {
+  border-left: 5px solid #2b6cb0;
+  background: #f7fafc;
+  padding: 12px 14px;
+  margin: 14px 0 18px 0;
+  border-radius: 6px;
+}
+.small-note { color: #4a5568; font-size: 0.95em; }
+.leaflet-container { background: #ffffff; }
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px;
+  margin: 14px 0 24px 0;
+}
+.summary-card {
+  border: 1px solid #d9e2ec;
+  border-radius: 12px;
+  padding: 14px 16px;
+  background: #f8fbff;
+}
+.summary-card h4 { margin: 0 0 8px 0; }
+.summary-card .big { font-size: 1.25em; font-weight: 700; }
+code { white-space: pre-wrap; }
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 7
+)
+
+library(terra)
+library(leaflet)
+library(htmltools)
+library(knitr)
+library(lutz)
+
+options(stringsAsFactors = FALSE)
+
+fmt_num <- function(x, digits = 2) {
+  ifelse(is.finite(x), format(round(x, digits), nsmall = digits, trim = TRUE), "n/a")
+}
+
+fmt_int <- function(x) {
+  ifelse(is.finite(x), format(round(x), trim = TRUE), "n/a")
+}
+
+parse_time_utc <- function(x) {
+  if (length(x) == 0 || all(is.na(x))) return(as.POSIXct(NA, tz = "UTC"))
+  x <- as.character(x)
+  as.POSIXct(x, tz = "UTC", tryFormats = c(
+    "%Y-%m-%dT%H:%M:%SZ",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M",
+    "%Y/%m/%d %H:%M:%S",
+    "%Y/%m/%d %H:%M",
+    "%d/%m/%Y %H:%M",
+    "%Y-%m-%d"
+  ))
+}
+
+fmt_utc <- function(x) {
+  ifelse(is.na(x), "n/a", format(x, "%Y-%m-%d %H:%M UTC", tz = "UTC"))
+}
+
+ordinal_suffix <- function(d) {
+  d <- as.integer(d)
+  ifelse(
+    d %% 100 %in% c(11, 12, 13),
+    "th",
+    c("th", "st", "nd", "rd", "th", "th", "th", "th", "th", "th")[pmin((d %% 10) + 1, 10)]
+  )
+}
+
+fmt_human_time <- function(x, tz = "UTC") {
+  out <- rep("n/a", length(x))
+  ok <- !is.na(x) & !is.na(tz) & nzchar(tz)
+  if (!length(ok)) return(out)
+  for (i in which(ok)) {
+    day_num <- as.integer(format(x[i], "%d", tz = tz[i]))
+    hh <- tolower(format(x[i], "%I%p", tz = tz[i]))
+    hh <- sub("^0", "", hh)
+    out[i] <- paste0(
+      hh, " ",
+      format(x[i], "%A ", tz = tz[i]),
+      day_num, ordinal_suffix(day_num),
+      " of ",
+      format(x[i], "%B", tz = tz[i]),
+      " (", format(x[i], "%Z", tz = tz[i]), ")"
+    )
+  }
+  out
+}
+
+lookup_local_tz <- function(lon, lat) {
+  out <- rep("Etc/UTC", length(lon))
+  res <- tryCatch(
+    lutz::tz_lookup_coords(lon = lon, lat = lat, method = "accurate"),
+    error = function(e) rep(NA_character_, length(lon))
+  )
+  if (length(res) == length(out)) out <- res
+  out[is.na(out) | !nzchar(out)] <- "Etc/UTC"
+  out
+}
+
+find_first_name <- function(nms, candidates) {
+  hit <- candidates[candidates %in% nms]
+  if (length(hit)) hit[1] else NULL
+}
+
+detect_repo_root <- function() {
+  roots <- c(".", "..", "../..")
+  hits <- roots[file.exists(file.path(roots, "outputs", "latest", "index.csv"))]
+  if (length(hits) == 0) return(normalizePath("..", winslash = "/", mustWork = FALSE))
+  normalizePath(hits[1], winslash = "/", mustWork = TRUE)
+}
+
+repo_root <- detect_repo_root()
+knitr::opts_knit$set(root.dir = repo_root)
+idx_file <- file.path(repo_root, "outputs", "latest", "index.csv")
+
+resolve_repo_path <- function(path) {
+  if (length(path) == 0 || is.na(path) || path == "") return(NA_character_)
+
+  if (grepl("^([A-Za-z]:)?/", path) && file.exists(path)) {
+    return(normalizePath(path, winslash = "/", mustWork = TRUE))
+  }
+
+  candidates <- unique(c(
+    path,
+    file.path(repo_root, path),
+    file.path(repo_root, basename(path)),
+    file.path(repo_root, "outputs", "latest", path),
+    file.path(repo_root, "outputs", "latest", basename(path)),
+    file.path(dirname(idx_file), basename(path))
+  ))
+
+  hit <- candidates[file.exists(candidates)]
+  if (length(hit) == 0) return(NA_character_)
+  normalizePath(hit[1], winslash = "/", mustWork = TRUE)
+}
+
+read_idx <- function(path) {
+  tryCatch(
+    read.csv(path, stringsAsFactors = FALSE, check.names = FALSE),
+    error = function(e) {
+      cat("## Failed to read index.csv\n\n")
+      cat(conditionMessage(e), "\n")
+      knitr::knit_exit()
+    }
+  )
+}
+
+read_single_rast <- function(path) {
+  p <- resolve_repo_path(path)
+  if (is.na(p)) return(NULL)
+  tryCatch(terra::rast(p), error = function(e) NULL)
+}
+
+read_track <- function(path) {
+  p <- resolve_repo_path(path)
+  if (is.na(p)) return(NULL)
+  tryCatch(terra::vect(p), error = function(e) NULL)
+}
+
+storm_value_max <- function(r) {
+  if (is.null(r)) return(NULL)
+  if (terra::nlyr(r) > 1) {
+    r <- tryCatch(terra::app(r, max, na.rm = TRUE), error = function(e) r[[1]])
+  }
+  r[[1]]
+}
+
+combine_max <- function(rast_list) {
+  rast_list <- Filter(Negate(is.null), rast_list)
+  if (length(rast_list) == 0) return(NULL)
+  if (length(rast_list) == 1) return(rast_list[[1]])
+  tryCatch(
+    do.call(terra::mosaic, c(rast_list, list(fun = "max"))),
+    error = function(e) tryCatch(terra::app(do.call(c, rast_list), fun = max, na.rm = TRUE), error = function(e2) NULL)
+  )
+}
+
+rast_global_max <- function(r) {
+  if (is.null(r)) return(NA_real_)
+  out <- tryCatch(terra::global(r, "max", na.rm = TRUE), error = function(e) NULL)
+  if (!is.null(out)) {
+    outv <- suppressWarnings(as.numeric(out[1, 1]))
+    if (is.finite(outv)) return(outv)
+  }
+  vals <- tryCatch(terra::values(r, mat = FALSE), error = function(e) numeric(0))
+  vals <- vals[is.finite(vals)]
+  if (length(vals) == 0) return(NA_real_)
+  max(vals)
+}
+
+infer_forecast_start <- function(track, fallback_peak = NA_character_, fallback_tpk = NULL) {
+  if (!is.null(track)) {
+    nms <- names(track)
+    time_col <- find_first_name(nms, c("DATETIME", "datetime", "validTime", "VALIDTIME", "ISO_TIME", "iso_time", "time", "TIME", "date", "DATE"))
+    dataset_col <- find_first_name(nms, c("DATASET", "dataset", "TYPE", "type", "source", "SOURCE"))
+
+    if (!is.null(time_col)) {
+      track_df <- as.data.frame(track)
+      tt <- parse_time_utc(track_df[[time_col]])
+      if (!is.null(dataset_col)) {
+        dd <- tolower(as.character(track_df[[dataset_col]]))
+        use <- grepl("forecast", dd)
+        if (any(use, na.rm = TRUE) && any(!is.na(tt[use]))) {
+          return(min(tt[use], na.rm = TRUE))
+        }
+      }
+      if (any(!is.na(tt))) return(min(tt, na.rm = TRUE))
+    }
+  }
+
+  peak_time <- parse_time_utc(fallback_peak)
+  if (!is.na(peak_time) && !is.null(fallback_tpk)) {
+    max_hr <- rast_global_max(storm_value_max(fallback_tpk))
+    if (is.finite(max_hr)) return(peak_time - max_hr * 3600)
+  }
+
+  as.POSIXct(NA, tz = "UTC")
+}
+
+# User palette carried over from earlier report versions
+colz <- rev(c(
+  "#000078", "#0000BB", "#0000FF", "#0C3AFC", "#1975FA", "#25B0F7", "#32EBF5", "#73EEE6", "#B4F1D7", "#F5F5C8",
+  "#F5F564", "#F5E032", "#F6CC00", "#F7A300", "#F97A00", "#FB5100", "#FF0000", "#DA0006", "#B5000D", "#910014",
+  "#7B003D", "#660066", "#88008C", "#AB00B2", "#CD00D8", "#F000FF", "#CAA6DE", "#DBA7DD", "#EDA9D2"
+))
+colzRamp <- colorRampPalette(rev(colz))
+
+prepare_raster_for_leaflet <- function(r) {
+  if (is.null(r)) return(NULL)
+  tryCatch(leaflet::projectRasterForLeaflet(r, method = "ngb"), error = function(e) r)
+}
+
+make_coast_query_points <- function(display_r, max_points = NULL) {
+  if (is.null(display_r)) return(NULL)
+
+  # 1 for valid ocean hazard cells, 0 for land / masked cells.
+  ocean01 <- tryCatch(terra::ifel(is.na(display_r), 0, 1), error = function(e) NULL)
+  if (is.null(ocean01)) return(NULL)
+
+  # Count valid neighbours in a 3x3 window.
+  # Outside the raster is treated as valid ocean (1), so outer domain edges are NOT flagged as coast.
+  neigh_sum <- tryCatch(
+    terra::focal(ocean01, w = matrix(1, 3, 3), fun = "sum", fillvalue = 1, na.rm = TRUE),
+    error = function(e) NULL
+  )
+  if (is.null(neigh_sum)) return(NULL)
+
+  # Coastal cells are valid ocean cells adjacent to at least one land / masked neighbour.
+  coast_r <- tryCatch(
+    terra::ifel(ocean01 == 1 & neigh_sum < 9, 1, NA),
+    error = function(e) NULL
+  )
+  if (is.null(coast_r)) return(NULL)
+
+  coast_cells <- which(!is.na(terra::values(coast_r, mat = FALSE)))
+  if (length(coast_cells) == 0) return(NULL)
+
+  if (!is.null(max_points) && is.finite(max_points) && length(coast_cells) > max_points) {
+    keep <- round(seq(1, length(coast_cells), length.out = max_points))
+    keep <- unique(pmax(1, pmin(length(coast_cells), keep)))
+    coast_cells <- coast_cells[keep]
+  }
+
+  xy <- terra::xyFromCell(coast_r, coast_cells)
+  pts <- terra::vect(as.data.frame(xy), geom = c("x", "y"), crs = terra::crs(coast_r))
+  attr(pts, "n_cells") <- length(coast_cells)
+  pts
+}
+
+extract_matrix <- function(rast_list, pts) {
+  rast_list <- lapply(rast_list, storm_value_max)
+  out <- lapply(rast_list, function(r) {
+    if (is.null(r)) return(rep(NA_real_, length(pts)))
+    vals <- tryCatch(terra::extract(r, pts)[, 2], error = function(e) rep(NA_real_, length(pts)))
+    as.numeric(vals)
+  })
+  if (length(out) == 0) return(matrix(numeric(0), nrow = length(pts), ncol = 0))
+  do.call(cbind, out)
+}
+
+metric_popup_df <- function(pts_display, pts_extract = NULL, value_rasts, tpk_rasts, starts, storm_labels, label = "Hs", digits = 2) {
+  if (is.null(pts_display)) return(data.frame())
+  if (is.null(pts_extract)) pts_extract <- pts_display
+
+  pts_ll <- if (!grepl("longlat", terra::crs(pts_display, proj = TRUE), ignore.case = TRUE)) terra::project(pts_display, "EPSG:4326") else pts_display
+  xy <- terra::crds(pts_ll, df = TRUE)
+  val_mat <- extract_matrix(value_rasts, pts_extract)
+  tpk_mat <- extract_matrix(tpk_rasts, pts_extract)
+
+  n <- nrow(xy)
+  if (n == 0) return(data.frame())
+
+  best_val <- rep(NA_real_, n)
+  best_tpk <- rep(NA_real_, n)
+  best_start <- as.POSIXct(rep(NA_real_, n), origin = "1970-01-01", tz = "UTC")
+  best_storm <- rep(NA_character_, n)
+
+  if (ncol(val_mat) > 0) {
+    for (i in seq_len(n)) {
+      vv <- val_mat[i, ]
+      if (all(is.na(vv))) next
+      j <- which.max(ifelse(is.na(vv), -Inf, vv))
+      best_val[i] <- vv[j]
+      if (ncol(tpk_mat) >= j) best_tpk[i] <- tpk_mat[i, j]
+      if (length(starts) >= j) best_start[i] <- starts[j]
+      if (length(storm_labels) >= j) best_storm[i] <- storm_labels[j]
+    }
+  }
+
+  peak_utc <- as.POSIXct(rep(NA_real_, n), origin = "1970-01-01", tz = "UTC")
+  ok <- is.finite(best_tpk) & !is.na(best_start)
+  peak_utc[ok] <- best_start[ok] + round(best_tpk[ok]) * 3600
+
+  local_tz <- lookup_local_tz(xy[, 1], xy[, 2])
+  peak_local_txt <- fmt_human_time(peak_utc, local_tz)
+  peak_utc_txt <- fmt_human_time(peak_utc, rep("UTC", n))
+
+  popup <- paste0(
+    "<b>", htmlEscape(label), "</b><br>",
+    htmlEscape(label), ": ", htmlEscape(fmt_num(best_val, digits)), " m<br>",
+    "Peak: ", htmlEscape(fmt_int(best_tpk)), " h from forecast start<br>",
+    "Peak UTC: ", htmlEscape(peak_utc_txt), "<br>",
+    "Peak local: ", htmlEscape(peak_local_txt), "<br>",
+    "Storm: ", htmlEscape(ifelse(is.na(best_storm), "n/a", best_storm))
+  )
+
+  data.frame(
+    lon = xy[, 1],
+    lat = xy[, 2],
+    value = best_val,
+    tpk_h = best_tpk,
+    peak_utc = peak_utc,
+    local_tz = local_tz,
+    peak_local = peak_local_txt,
+    storm = best_storm,
+    popup = popup,
+    stringsAsFactors = FALSE
+  )
+}
+
+make_track_popup <- function(track, label = NULL) {
+  if (is.null(track)) return(NULL)
+  nm <- names(track)
+  tcol <- find_first_name(nm, c("DATETIME", "datetime", "validTime", "VALIDTIME", "ISO_TIME", "iso_time", "time", "TIME"))
+  d <- as.data.frame(track)
+  time_txt <- if (!is.null(tcol) && tcol %in% names(d)) {
+    tt <- parse_time_utc(d[[tcol]])
+    tt <- tt[!is.na(tt)]
+    if (length(tt)) paste0(format(min(tt), "%Y-%m-%d %H:%M UTC", tz = "UTC"), " to ", format(max(tt), "%Y-%m-%d %H:%M UTC", tz = "UTC")) else "n/a"
+  } else {
+    "n/a"
+  }
+  paste0("<b>", htmlEscape(ifelse(is.null(label) || is.na(label) || !nzchar(label), "Storm track", label)), "</b><br>",
+         "Track time span: ", htmlEscape(time_txt))
+}
+
+make_leaf_map <- function(display_r_leaf, bounds_r, query_df, title, legend_title, pal, tracks = NULL, track_labels = NULL, tiles = "CartoDB.PositronNoLabels") {
+  if (is.null(display_r_leaf)) {
+    return(htmltools::div(style = "padding: 1rem; border: 1px solid #ddd;", paste(title, "not available.")))
+  }
+
+  vals <- terra::values(display_r_leaf, mat = FALSE)
+  vals <- vals[is.finite(vals)]
+
+  m <- leaflet(options = leafletOptions(preferCanvas = TRUE))
+  if (!is.null(tiles) && nzchar(tiles)) {
+    m <- m %>% addProviderTiles(tiles)
+  }
+
+  m <- m %>%
+    addRasterImage(display_r_leaf, colors = pal, opacity = 0.88, project = FALSE, group = title) %>%
+    addLegend(pal = pal, values = vals, title = legend_title, opacity = 0.95, position = "bottomright")
+
+  if (!is.null(tracks) && length(tracks)) {
+    for (i in seq_along(tracks)) {
+      tr <- tracks[[i]]
+      if (!is.null(tr) && inherits(tr, "SpatVector") && nrow(tr) > 1) {
+        tr_ll <- tryCatch(terra::project(tr, "EPSG:4326"), error = function(e) tr)
+        m <- m %>% addPolylines(
+          data = tr_ll,
+          color = params$track_color,
+          weight = params$track_weight,
+          opacity = params$track_opacity,
+          popup = make_track_popup(tr, if (!is.null(track_labels) && length(track_labels) >= i) track_labels[i] else NULL),
+          group = "Tracks"
+        )
+      }
+    }
+  }
+
+  if (nrow(query_df) > 0) {
+    m <- m %>%
+      addCircleMarkers(
+        lng = query_df$lon,
+        lat = query_df$lat,
+        radius = params$point_radius,
+        stroke = TRUE,
+        weight = 1,
+        color = "#1f2937",
+        opacity = 0.85,
+        fillColor = "white",
+        fillOpacity = 0.35,
+        popup = query_df$popup,
+        group = "Coast cells"
+      )
+  }
+
+  overlay_groups <- c(title, if (length(tracks)) "Tracks", if (nrow(query_df) > 0) "Coast cells")
+  overlay_groups <- overlay_groups[nzchar(overlay_groups)]
+  if (length(overlay_groups) > 1) {
+    m <- m %>% addLayersControl(
+      overlayGroups = overlay_groups,
+      options = layersControlOptions(collapsed = FALSE)
+    )
+  }
+
+  m %>% fitBounds(terra::xmin(bounds_r), terra::ymin(bounds_r), terra::xmax(bounds_r), terra::ymax(bounds_r))
+}
+
+render_summary_cards <- function(hs0_peak_overall, ib_peak_overall, n_storms) {
+  cat(paste0(
+    '<div class="summary-grid">',
+    '<div class="summary-card"><h4>Highest coastal wave height</h4><div class="big">', fmt_num(hs0_peak_overall, 2), ' m</div><div class="small-note">Largest forecast wave height near the coast in the current outlook.</div></div>',
+    '<div class="summary-card"><h4>Highest inverse-barometer storm-surge water level</h4><div class="big">', fmt_num(ib_peak_overall, 2), ' m</div><div class="small-note">Largest pressure-driven rise in coastal water level near the cyclone eye in the current outlook.</div></div>',
+    '<div class="summary-card"><h4>Active cyclone tracks</h4><div class="big">', fmt_int(n_storms), '</div><div class="small-note">Forecast cyclone tracks shown on the maps below.</div></div>',
+    '</div>',
+    '<div class="small-note"><b>At a glance:</b> warmer colours show larger coastal impacts. Click a coastal location for the forecast value, the expected peak time in UTC and local time, and the storm affecting that stretch of coast.</div>'
+  ))
+}
+```
+
+```{r data-prep, include=FALSE}
+idx <- read_idx(idx_file)
+idx <- idx[rowSums(is.na(idx)) < ncol(idx), , drop = FALSE]
+
+hs0_val_col <- find_first_name(names(idx), c("haz_hs0_tif", "hs0_max_tif"))
+ib_val_col  <- find_first_name(names(idx), c("haz_ib_tif",  "ibs_max_tif", "ib_max_tif"))
+hs0_tpk_col <- find_first_name(names(idx), c("hs0_tpk_tif", "hs_tpk_tif"))
+ib_tpk_col  <- find_first_name(names(idx), c("ibs_tpk_tif", "ib_tpk_tif"))
+track_col   <- find_first_name(names(idx), c("track_gpkg", "tc_gpkg", "gpkg", "track_file", "storm_gpkg"))
+name_col    <- find_first_name(names(idx), c("storm_name", "name", "storm", "cyclone_name", "tc_name", "title"))
+
+if (is.null(hs0_val_col) || is.null(ib_val_col) || is.null(hs0_tpk_col) || is.null(ib_tpk_col)) {
+  cat("## Required raster columns were not found in outputs/latest/index.csv\n")
+  cat("Expected columns include `haz_hs0_tif`, `haz_ib_tif`, `hs0_tpk_tif`, and `ibs_tpk_tif`.\n")
+  knitr::knit_exit()
+}
+
+storm_labels <- if (!is.null(name_col)) idx[[name_col]] else paste("Storm", seq_len(nrow(idx)))
+storm_labels[is.na(storm_labels) | storm_labels == ""] <- paste("Storm", which(is.na(storm_labels) | storm_labels == ""))
+
+# Keep the working raster-loading pattern the user confirmed.
+hs0_rasts <- lapply(idx$haz_hs0_tif, read_single_rast)
+ib_rasts  <- lapply(idx$haz_ib_tif, read_single_rast)
+hs0_tpk_rasts <- lapply(idx$hs0_tpk_tif, read_single_rast)
+ib_tpk_rasts  <- lapply(idx$ibs_tpk_tif, read_single_rast)
+tracks <- if (!is.null(track_col)) lapply(idx[[track_col]], read_track) else vector("list", length(hs0_rasts))
+
+hs0_display_list <- lapply(hs0_rasts, storm_value_max)
+ib_display_list  <- lapply(ib_rasts,  storm_value_max)
+
+hs0_display <- combine_max(hs0_display_list)
+ib_display  <- combine_max(ib_display_list)
+
+hs0_starts <- vapply(seq_len(nrow(idx)), function(i) {
+  as.numeric(infer_forecast_start(
+    if (length(tracks) >= i) tracks[[i]] else NULL,
+    fallback_peak = if ("hs0_peak_time" %in% names(idx)) idx$hs0_peak_time[i] else NA_character_,
+    fallback_tpk = if (length(hs0_tpk_rasts) >= i) hs0_tpk_rasts[[i]] else NULL
+  ))
+}, numeric(1))
+hs0_starts <- as.POSIXct(hs0_starts, origin = "1970-01-01", tz = "UTC")
+
+ib_starts <- vapply(seq_len(nrow(idx)), function(i) {
+  as.numeric(infer_forecast_start(
+    if (length(tracks) >= i) tracks[[i]] else NULL,
+    fallback_peak = if ("ibs_peak_time" %in% names(idx)) idx$ibs_peak_time[i] else if ("ib_peak_time" %in% names(idx)) idx$ib_peak_time[i] else NA_character_,
+    fallback_tpk = if (length(ib_tpk_rasts) >= i) ib_tpk_rasts[[i]] else NULL
+  ))
+}, numeric(1))
+ib_starts <- as.POSIXct(ib_starts, origin = "1970-01-01", tz = "UTC")
+
+hs0_display_leaf <- prepare_raster_for_leaflet(hs0_display)
+ib_display_leaf  <- prepare_raster_for_leaflet(ib_display)
+
+hs0_query_pts_leaf <- make_coast_query_points(hs0_display_leaf, max_points = params$max_query_points)
+ib_query_pts_leaf  <- make_coast_query_points(ib_display_leaf,  max_points = params$max_query_points)
+
+hs0_query_pts_extract <- if (!is.null(hs0_query_pts_leaf)) tryCatch(terra::project(hs0_query_pts_leaf, terra::crs(hs0_display)), error = function(e) hs0_query_pts_leaf) else NULL
+ib_query_pts_extract  <- if (!is.null(ib_query_pts_leaf))  tryCatch(terra::project(ib_query_pts_leaf,  terra::crs(ib_display)),  error = function(e) ib_query_pts_leaf)  else NULL
+
+hs0_query_df <- metric_popup_df(hs0_query_pts_leaf, hs0_query_pts_extract, hs0_rasts, hs0_tpk_rasts, hs0_starts, storm_labels, label = "Wave height", digits = 2)
+ib_query_df  <- metric_popup_df(ib_query_pts_leaf,  ib_query_pts_extract,  ib_rasts,  ib_tpk_rasts,  ib_starts,  storm_labels, label = "Inverse-barometer storm-surge water level", digits = 2)
+
+if (nrow(hs0_query_df) > 0) hs0_query_df <- hs0_query_df[is.finite(hs0_query_df$value), , drop = FALSE]
+if (nrow(ib_query_df) > 0)  ib_query_df  <- ib_query_df[is.finite(ib_query_df$value),  , drop = FALSE]
+
+hs0_peak_overall <- rast_global_max(hs0_display)
+ib_peak_overall  <- rast_global_max(ib_display)
+
+track_overlay <- if (isTRUE(params$show_tracks)) tracks else NULL
+n_storms <- sum(vapply(track_overlay, function(x) !is.null(x), logical(1)))
+
+summary_tbl <- data.frame(
+  Storm = storm_labels,
+  Hs_peak_m = vapply(hs0_display_list, rast_global_max, numeric(1)),
+  IB_peak_m = vapply(ib_display_list, rast_global_max, numeric(1)),
+  stringsAsFactors = FALSE
+)
+summary_tbl$Hs_peak_m <- round(summary_tbl$Hs_peak_m, 2)
+summary_tbl$IB_peak_m <- round(summary_tbl$IB_peak_m, 2)
+
+hs_dom_max <- max(c(params$hs_legend_max, hs0_peak_overall), na.rm = TRUE)
+ib_dom_max <- max(c(params$ib_legend_max, ib_peak_overall), na.rm = TRUE)
+pal_hs0 <- colorNumeric(palette = colzRamp(256), domain = c(0, hs_dom_max), na.color = "transparent")
+pal_ib  <- colorNumeric(palette = colzRamp(256), domain = c(0, ib_dom_max), na.color = "transparent")
+
+hs_map <- make_leaf_map(hs0_display_leaf, hs0_display, hs0_query_df, title = "Wave height near the coast [m]", legend_title = "Wave height [m]", pal = pal_hs0, tracks = track_overlay, track_labels = storm_labels, tiles = params$tiles)
+ib_map <- make_leaf_map(ib_display_leaf,  ib_display,  ib_query_df,  title = "Inverse-barometer storm-surge water level [m]", legend_title = "Storm-surge water level [m]", pal = pal_ib,  tracks = track_overlay, track_labels = storm_labels, tiles = params$tiles)
+```
+
+## Overview
+
+<div class="note-box">
+These maps highlight where coastal impacts are expected to be greatest in the current cyclone outlook. One map shows forecast wave height near the coast. The other shows inverse-barometer storm-surge water level: a rise in coastal water level caused by very low pressure near the cyclone eye lifting the sea surface. Warmer colours indicate larger impacts. The dark line shows the forecast cyclone track. Click a coastal location to see the local value, the expected peak time in UTC and local time, and the storm affecting that stretch of coast.
+</div>
+
+```{r summary-cards, results='asis'}
+render_summary_cards(hs0_peak_overall, ib_peak_overall, n_storms)
+```
+
+## Wave height near the coast [m]
+
+Click a coastal location to see the forecast wave height, the expected peak timing, and the storm affecting that stretch of coast.
+
+```{r hs-map, out.width='100%', fig.height=params$map_height/96}
+hs_map
+```
+
+## Inverse-barometer storm-surge water level [m]
+
+Click a coastal location to see the pressure-driven rise in coastal water level, the expected peak timing, and the storm affecting that stretch of coast.
+
+```{r ib-map, out.width='100%', fig.height=params$map_height/96}
+ib_map
+```
+
+## Active storms summary
+
+```{r summary-table}
+kable(summary_tbl, align = c("l", "r", "r"), caption = "Per-storm maximum values from the loaded rasters.")
+```
+
+## How to read these maps
+
+- **Wave height near the coast** shows the forecast wave height in metres.
+- **Inverse-barometer storm-surge water level** shows the pressure-driven rise in sea level caused by low pressure near the cyclone eye.
+- **Warmer colours** indicate larger coastal impacts.
+- **The dark line** shows the forecast cyclone track.
+- **Click a coastal location** to see the local forecast value, the expected peak time in UTC and local time, and the storm driving that part of the coast.
