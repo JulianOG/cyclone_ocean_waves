@@ -515,14 +515,31 @@ ib_starts <- vapply(seq_len(nrow(idx)), function(i) {
 }, numeric(1))
 ib_starts <- as.POSIXct(ib_starts, origin = "1970-01-01", tz = "UTC")
 
-hs0_display_leaf <- prepare_raster_for_leaflet(hs0_display)
-ib_display_leaf  <- prepare_raster_for_leaflet(ib_display)
+# Detect coast cells using the original, unprojected hazard rasters.
+hs0_query_pts_extract <- make_coast_query_points(
+  hs0_display,
+  max_points = params$max_query_points
+)
 
-hs0_query_pts_leaf <- make_coast_query_points(hs0_display_leaf, max_points = params$max_query_points)
-ib_query_pts_leaf  <- make_coast_query_points(ib_display_leaf,  max_points = params$max_query_points)
+ib_query_pts_extract <- make_coast_query_points(
+  ib_display,
+  max_points = params$max_query_points
+)
 
-hs0_query_pts_extract <- if (!is.null(hs0_query_pts_leaf)) tryCatch(terra::project(hs0_query_pts_leaf, terra::crs(hs0_display)), error = function(e) hs0_query_pts_leaf) else NULL
-ib_query_pts_extract  <- if (!is.null(ib_query_pts_leaf))  tryCatch(terra::project(ib_query_pts_leaf,  terra::crs(ib_display)),  error = function(e) ib_query_pts_leaf)  else NULL
+# Project only the point locations for display in Leaflet.
+hs0_query_pts_leaf <- if (!is.null(hs0_query_pts_extract)) {
+  tryCatch(
+    terra::project(hs0_query_pts_extract, terra::crs(hs0_display_leaf)),
+    error = function(e) hs0_query_pts_extract
+  )
+} else NULL
+
+ib_query_pts_leaf <- if (!is.null(ib_query_pts_extract)) {
+  tryCatch(
+    terra::project(ib_query_pts_extract, terra::crs(ib_display_leaf)),
+    error = function(e) ib_query_pts_extract
+  )
+} else NULL
 
 hs0_query_df <- metric_popup_df(hs0_query_pts_leaf, hs0_query_pts_extract, hs0_rasts, hs0_tpk_rasts, hs0_starts, storm_labels, label = "Wave height", digits = 2)
 ib_query_df  <- metric_popup_df(ib_query_pts_leaf,  ib_query_pts_extract,  ib_rasts,  ib_tpk_rasts,  ib_starts,  storm_labels, label = "Inverse-barometer storm-surge water level", digits = 2)
