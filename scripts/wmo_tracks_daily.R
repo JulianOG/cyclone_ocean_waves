@@ -111,7 +111,9 @@ json2spatVect <- function(a, varb, previous_point = NULL) {
   pres <- suppressWarnings(as.numeric(track$pressure[1:(nt - 1)]))
   vms  <- suppressWarnings(as.numeric(track$max_wind_speed[1:(nt - 1)])) * 0.5144 # knots -> m/s
 
-  if (all(is.na(pres))) pres <- CpFromVmax(vms, Ep = 1010)
+  pres2 <- CpFromVmax(vms, Ep = 1010)
+  pres[is.na(pres)] <- pres2[is.na(pres)]
+  #if (all(is.na(pres))) pres 
   track_v$PRES <- pres
   track_v$RMW_STR <- track$wind_radii[1:(nt - 1)]
 
