@@ -515,6 +515,9 @@ ib_starts <- vapply(seq_len(nrow(idx)), function(i) {
 }, numeric(1))
 ib_starts <- as.POSIXct(ib_starts, origin = "1970-01-01", tz = "UTC")
 
+hs0_display_leaf <- prepare_raster_for_leaflet(hs0_display)
+ib_display_leaf  <- prepare_raster_for_leaflet(ib_display)
+
 # Detect coast cells using the original, unprojected hazard rasters.
 hs0_query_pts_extract <- make_coast_query_points(
   hs0_display,
