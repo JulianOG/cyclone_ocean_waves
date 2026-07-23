@@ -18,6 +18,7 @@ params:
   track_weight: 2.5
   track_opacity: 0.85
   track_color: "#2d3748"
+  forecast_track_color: "#198754"
 date: "`r format(Sys.time(), '%Y-%m-%d %H:%M UTC', tz = 'UTC')`"
 ---
 
