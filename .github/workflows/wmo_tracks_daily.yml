@@ -1,8 +1,5 @@
 name: WMO tracks + hazards (daily)
 
-track_color: "#2d3748"
-forecast_track_color: "#198754"
-
 on:
   schedule:
     - cron: "15 0 * * *"
