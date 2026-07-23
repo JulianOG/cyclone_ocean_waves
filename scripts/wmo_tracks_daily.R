@@ -106,8 +106,12 @@ json2spatVect <- function(a, varb, previous_point = NULL) {
   # Segment attributes (use the "start" point for each segment)
   track_v$DATASET <- varb
   track_v$WID <- track$tc_id[1:(nt - 1)]
-  track_v$NAME <- track$tc_name[1:(nt - 1)]
-
+  # Use the names at both ends of each segment. This preserves a name
+  # change that occurs at the final forecast point.
+  track_v$NAME <- vapply(seq_len(nt - 1), function(i) {
+    combine_tc_names(track$tc_name[c(i, i + 1)])
+  }, character(1))
+  
   pres <- suppressWarnings(as.numeric(track$pressure[1:(nt - 1)]))
   vms  <- suppressWarnings(as.numeric(track$max_wind_speed[1:(nt - 1)])) * 0.5144 # knots -> m/s
 
@@ -193,6 +197,24 @@ WMO_TC_vl <- function(TCid) {
   return(track)
 }
 
+combine_tc_names <- function(x, fallback = "NONAME") {
+  x <- as.character(x)
+  x <- unlist(strsplit(x, "/", fixed = TRUE), use.names = FALSE)
+  x <- trimws(x)
+  
+  x <- x[
+    !is.na(x) &
+      nzchar(x) &
+      !toupper(x) %in% c("NULL", "NA", "N/A", "NONAME")
+  ]
+  
+  if (length(x) == 0) {
+    fallback
+  } else {
+    paste(unique(x), collapse = "/")
+  }
+}
+
 # Read params once
 paramsTable <- read.csv(system.file("extdata/tuningParams/defult_params.csv", package = "TCHazaRds"))
 
@@ -249,8 +271,7 @@ for (i in seq_along(TCids)) {
   tryCatch({
     TC <- WMO_TC_vl(TCid)
 
-    nm <- "NONAME"
-    if (any(TC$NAME != "" & !is.na(TC$NAME))) nm <- TC$NAME[TC$NAME != "" & !is.na(TC$NAME)][1]
+    nm <- combine_tc_names(TC$NAME)
     row$name <- nm
 
     TC$TC_CENTRE <- row$centre
