@@ -23,7 +23,7 @@ other attached packages:
 
 loaded via a namespace (and not attached):
  [1] RColorBrewer_1.1-3  codetools_0.2-20    lattice_0.22-9     
- [4] hexbin_1.28.5       rasterVis_0.51.7    zoo_1.8-15         
+ [4] hexbin_1.28.6       rasterVis_0.51.7    zoo_1.8-15         
  [7] raster_3.6-32       jpeg_0.1-11         latticeExtra_0.6-31
 [10] parallel_4.6.1      deldir_2.0-4        png_0.1-9          
 [13] viridisLite_0.4.3   geosphere_1.6-8     grid_4.6.1         
